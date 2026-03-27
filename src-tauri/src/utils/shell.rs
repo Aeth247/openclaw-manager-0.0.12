@@ -503,8 +503,9 @@ fn windows_openclaw_cmd_script(openclaw_path: &str, args: &[&str]) -> String {
 /// 获取 openclaw 可执行文件路径
 /// 检测多个可能的安装路径，因为 GUI 应用不继承用户 shell 的 PATH
 pub fn get_openclaw_path() -> Option<String> {
-    // Windows: 检查常见的 npm 全局安装路径
-    if platform::is_windows() {
+    // Windows: 检查常见的 npm 全局安装路径（必须用 #[cfg]，否则 Linux 编译期会引用仅 Windows 存在的符号）
+    #[cfg(windows)]
+    {
         let possible_paths = get_windows_openclaw_paths();
         for path in possible_paths {
             if std::path::Path::new(&path).exists() {
@@ -512,8 +513,9 @@ pub fn get_openclaw_path() -> Option<String> {
                 return Some(path);
             }
         }
-    } else {
-        // Unix: 检查常见的 npm 全局安装路径
+    }
+    #[cfg(not(windows))]
+    {
         let possible_paths = get_unix_openclaw_paths();
         for path in possible_paths {
             if std::path::Path::new(&path).exists() {
@@ -533,7 +535,8 @@ pub fn get_openclaw_path() -> Option<String> {
     }
     
     // 最后尝试：通过用户 shell 查找
-    if !platform::is_windows() {
+    #[cfg(not(windows))]
+    {
         if let Ok(path) = run_bash_output("source ~/.zshrc 2>/dev/null || source ~/.bashrc 2>/dev/null; which openclaw 2>/dev/null") {
             if !path.is_empty() && std::path::Path::new(&path).exists() {
                 info!("[Shell] 通过用户 shell 找到 openclaw: {}", path);
@@ -625,6 +628,7 @@ fn get_unix_openclaw_paths() -> Vec<String> {
 }
 
 /// 获取 Windows 上可能的 openclaw 安装路径
+#[cfg(windows)]
 fn get_windows_openclaw_paths() -> Vec<String> {
     let mut paths = Vec::new();
     
