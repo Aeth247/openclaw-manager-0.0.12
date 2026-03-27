@@ -241,7 +241,7 @@ pub async fn stop_service() -> Result<String, String> {
     for &pid in &pids {
         kill_process(pid, false);
     }
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    std::thread::sleep(std::time::Duration::from_secs(3));
     
     // 检查是否已停止
     let remaining = get_pids_on_port(SERVICE_PORT);
@@ -255,9 +255,23 @@ pub async fn stop_service() -> Result<String, String> {
     for &pid in &remaining {
         kill_process(pid, true);
     }
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    
-    let still_running = get_pids_on_port(SERVICE_PORT);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    let mut still_running = get_pids_on_port(SERVICE_PORT);
+    #[cfg(windows)]
+    if !still_running.is_empty() {
+        // taskkill 偶发未清干净（权限/进程树），再试 PowerShell Stop-Process
+        for &pid in &still_running {
+            let script = format!(
+                "Stop-Process -Id {} -Force -ErrorAction SilentlyContinue",
+                pid
+            );
+            let _ = shell::run_powershell_output(&script);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        still_running = get_pids_on_port(SERVICE_PORT);
+    }
+
     if still_running.is_empty() {
         info!("[服务] ✓ 已强制停止");
         Ok("服务已停止".to_string())

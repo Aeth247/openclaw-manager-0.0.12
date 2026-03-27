@@ -7,7 +7,7 @@ import { QuickActions } from './QuickActions';
 import { SystemInfo } from './SystemInfo';
 import { Setup } from '../Setup';
 import { api, ServiceStatus, isTauri } from '../../lib/tauri';
-import { Terminal, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
+import { Terminal, RefreshCw, ChevronDown, ChevronUp, ShieldCheck, AlertTriangle } from 'lucide-react';
 import clsx from 'clsx';
 import { EnvironmentStatus } from '../../App';
 
@@ -152,6 +152,37 @@ export function Dashboard({ envStatus, onSetupComplete }: DashboardProps) {
         animate="show"
         className="space-y-6"
       >
+        {envStatus && (
+          <motion.div variants={itemVariants}>
+            <div className="rounded-2xl border border-edge bg-surface-card px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2 text-sm font-medium text-content-primary">
+                {envStatus.ready ? (
+                  <ShieldCheck size={18} className="text-green-400 shrink-0" />
+                ) : (
+                  <AlertTriangle size={18} className="text-amber-400 shrink-0" />
+                )}
+                <span>环境与安装检测</span>
+              </div>
+              <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-content-secondary">
+                <span>
+                  Node：{envStatus.node_version ?? '—'}
+                  {envStatus.node_version_ok ? '' : '（版本偏低）'}
+                </span>
+                <span>
+                  OpenClaw：
+                  {envStatus.openclaw_installed
+                    ? envStatus.openclaw_version ?? 'CLI 已找到（若无法读版本，请重新编译安装本管理端）'
+                    : '未安装'}
+                </span>
+                <span>配置目录：{envStatus.config_dir_exists ? '✓' : '✗'}</span>
+                <span className={envStatus.ready ? 'text-green-400/90' : 'text-amber-400'}>
+                  {envStatus.ready ? '当前可正常使用主要功能' : '需完成向导或修复环境'}
+                </span>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
         {needsSetup && (
           <motion.div variants={itemVariants}>
             <Setup onComplete={onSetupComplete} embedded />

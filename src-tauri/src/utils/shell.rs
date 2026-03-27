@@ -332,15 +332,19 @@ pub fn spawn_background(script: &str) -> io::Result<()> {
 fn resolve_openclaw_via_where() -> Option<String> {
     let extended = get_extended_path();
     let mut cmd = Command::new("cmd");
-    cmd.args(["/d", "/s", "/c", "where openclaw"]);
+    cmd.args(["/d", "/c", "where openclaw"]);
     cmd.env("PATH", &extended);
     cmd.creation_flags(CREATE_NO_WINDOW);
     let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
-    let out = String::from_utf8_lossy(&output.stdout);
-    let mut candidates: Vec<&str> = out.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let out = decode_cli_output_bytes(&output.stdout);
+    let mut candidates: Vec<String> = out
+        .lines()
+        .map(|l| normalize_cmd_path(l))
+        .filter(|l| !l.is_empty())
+        .collect();
     candidates.sort_by_key(|p| {
         let pl = p.to_lowercase();
         if pl.ends_with(".cmd") {
@@ -352,29 +356,45 @@ fn resolve_openclaw_via_where() -> Option<String> {
         }
     });
     for p in candidates {
-        if std::path::Path::new(p).exists() {
-            return Some(p.to_string());
+        if std::path::Path::new(&p).exists() {
+            return Some(p);
         }
     }
     None
 }
 
-/// Windows：`cmd /c` 一行调用（路径含空格时也能工作）
+/// 规范化 CLI 路径（去除外层引号与空白，避免拼进 cmd 后变成非法「命令名」）
+pub fn normalize_cmd_path(p: &str) -> String {
+    p.trim_matches(|c| c == '"' || c == ' ' || c == '\t').to_string()
+}
+
+/// Windows：构造 `cmd /d /c` 后面的命令行。
+///
+/// **不要使用 `/s`**：`/s` 会额外剥掉一层引号，常把 `"D:\...\openclaw.cmd"` 拆坏，
+/// 从而出现「'\"D:\...\openclaw.cmd\"' 不是内部或外部命令」。
+/// 对 `.cmd`/`.bat` 使用 `call "路径" ...`，与手动在 cmd 里执行 npm 全局 shim 行为一致。
 #[cfg(windows)]
-fn windows_cmd_c_one_line(script: &str, args: &[&str]) -> String {
-    let esc = script.replace('"', r#"\""#);
-    let mut line = format!("\"{}\"", esc);
+fn windows_openclaw_cmd_script(openclaw_path: &str, args: &[&str]) -> String {
+    let p_clean = normalize_cmd_path(openclaw_path);
+    let mut rest = String::new();
     for a in args {
-        line.push(' ');
-        if a.contains(' ') {
-            line.push('"');
-            line.push_str(a);
-            line.push('"');
+        rest.push(' ');
+        if a.contains(' ') || a.contains('&') || a.contains('(') {
+            let esc = a.replace('"', r#"\""#);
+            rest.push('"');
+            rest.push_str(&esc);
+            rest.push('"');
         } else {
-            line.push_str(a);
+            rest.push_str(a);
         }
     }
-    line
+    let use_call =
+        ends_with_ignore_case(&p_clean, ".cmd") || ends_with_ignore_case(&p_clean, ".bat");
+    if use_call {
+        format!("call \"{}\"{}", p_clean.replace('"', ""), rest)
+    } else {
+        format!("\"{}\"{}", p_clean.replace('"', ""), rest)
+    }
 }
 
 /// 获取 openclaw 可执行文件路径
@@ -601,10 +621,13 @@ fn normalize_version_token(s: &str) -> Option<String> {
 pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
     debug!("[Shell] 执行 openclaw 命令: {:?}", args);
     
-    let openclaw_path = get_openclaw_path().ok_or_else(|| {
-        warn!("[Shell] 找不到 openclaw 命令");
-        "找不到 openclaw 命令，请确保已通过 npm install -g openclaw 安装".to_string()
-    })?;
+    let openclaw_path = get_openclaw_path()
+        .map(|s| normalize_cmd_path(&s))
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            warn!("[Shell] 找不到 openclaw 命令");
+            "找不到 openclaw 命令，请确保已通过 npm install -g openclaw 安装".to_string()
+        })?;
     
     debug!("[Shell] openclaw 路径: {}", openclaw_path);
     
@@ -615,11 +638,10 @@ pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
     let output = {
         #[cfg(windows)]
         {
-            // 统一走 cmd /d /s /c：正确解析 .cmd、含空格路径，并应用 PATHEXT（避免 program not found）
-            let line = windows_cmd_c_one_line(&openclaw_path, args);
-            debug!("[Shell] Windows 执行行: {}", line);
+            let script = windows_openclaw_cmd_script(&openclaw_path, args);
+            debug!("[Shell] Windows cmd /c: {}", script);
             let mut cmd = Command::new("cmd");
-            cmd.args(["/d", "/s", "/c", &line])
+            cmd.args(["/d", "/c", &script])
                 .env("OPENCLAW_GATEWAY_TOKEN", DEFAULT_GATEWAY_TOKEN)
                 .env("PATH", &extended_path);
             cmd.creation_flags(CREATE_NO_WINDOW);
@@ -715,13 +737,16 @@ fn load_openclaw_env_vars() -> HashMap<String, String> {
 pub fn spawn_openclaw_gateway() -> io::Result<()> {
     info!("[Shell] 后台启动 openclaw gateway...");
     
-    let openclaw_path = get_openclaw_path().ok_or_else(|| {
-        warn!("[Shell] 找不到 openclaw 命令");
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "找不到 openclaw 命令，请确保已通过 npm install -g openclaw 安装"
-        )
-    })?;
+    let openclaw_path = get_openclaw_path()
+        .map(|s| normalize_cmd_path(&s))
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            warn!("[Shell] 找不到 openclaw 命令");
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "找不到 openclaw 命令，请确保已通过 npm install -g openclaw 安装"
+            )
+        })?;
     
     info!("[Shell] openclaw 路径: {}", openclaw_path);
     
@@ -739,10 +764,10 @@ pub fn spawn_openclaw_gateway() -> io::Result<()> {
     
     #[cfg(windows)]
     let mut cmd = {
-        let line = windows_cmd_c_one_line(&openclaw_path, &["gateway", "--port", "18789"]);
-        info!("[Shell] Windows 启动: {}", line);
+        let script = windows_openclaw_cmd_script(&openclaw_path, &["gateway", "--port", "18789"]);
+        info!("[Shell] Windows 启动: {}", script);
         let mut c = Command::new("cmd");
-        c.args(["/d", "/s", "/c", &line]);
+        c.args(["/d", "/c", &script]);
         c
     };
     #[cfg(not(windows))]
@@ -815,8 +840,8 @@ pub fn spawn_openclaw_gateway() -> io::Result<()> {
 pub fn command_exists(cmd: &str) -> bool {
     // Windows：where 必须带上与执行 openclaw 相同的 PATH，否则 GUI 进程常误判为不存在
     let mut command = Command::new("cmd");
-    command
-        .args(["/d", "/s", "/c", &format!("where {}", cmd)])
+        command
+            .args(["/d", "/c", &format!("where {}", cmd)])
         .env("PATH", get_extended_path());
     command.creation_flags(CREATE_NO_WINDOW);
     command

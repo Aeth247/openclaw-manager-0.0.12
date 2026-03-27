@@ -516,12 +516,12 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
         shell::run_bash_output("cat /etc/os-release | grep VERSION_ID | cut -d'=' -f2 | tr -d '\"'")
             .unwrap_or_else(|_| "unknown".to_string())
     } else if platform::is_windows() {
-        // `ver` 默认把版本写在 stderr
+        // `ver` 常为 GBK，stderr 居多
         shell::run_cmd("ver")
             .ok()
             .map(|out| {
-                let a = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                let b = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let a = shell::decode_cli_output_bytes(&out.stderr).trim().to_string();
+                let b = shell::decode_cli_output_bytes(&out.stdout).trim().to_string();
                 if !a.is_empty() {
                     a
                 } else if !b.is_empty() {
