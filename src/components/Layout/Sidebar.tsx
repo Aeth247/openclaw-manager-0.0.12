@@ -50,6 +50,7 @@ export function Sidebar({ currentPage, onNavigate, serviceStatus }: SidebarProps
         className="h-14 flex items-center px-6 titlebar-drag"
         style={{ borderBottom: '1px solid var(--border-primary)' }}
       >
+        {/* 图标来自 src-tauri/resources：exe_icon.png → /brand-icon.png，window_icon.png → /window-icon.png（npm run icons:gen 同步） */}
         <div className="flex items-center gap-2 titlebar-no-drag">
           <img
             src="/brand-icon.png"
@@ -61,11 +62,11 @@ export function Sidebar({ currentPage, onNavigate, serviceStatus }: SidebarProps
           <img
             src="/window-icon.png"
             alt=""
-            className="h-7 w-7 object-contain rounded-md shrink-0 bg-surface-elevated/80"
-            width={28}
-            height={28}
+            className="h-8 w-8 object-contain rounded-lg shrink-0 bg-surface-elevated/80"
+            width={32}
+            height={32}
           />
-          <div>
+          <div className="min-w-0">
             <h1 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>虾池子</h1>
           </div>
         </div>

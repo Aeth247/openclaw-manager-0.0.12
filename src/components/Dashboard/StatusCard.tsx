@@ -19,12 +19,13 @@ interface StatusCardProps {
 export function StatusCard({ status, loading }: StatusCardProps) {
   const { t } = useTranslation();
 
-  const formatUptime = (seconds: number | null) => {
-    if (!seconds) return '--';
+  const formatUptime = (seconds: number | null | undefined) => {
+    if (seconds == null) return '--';
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     if (hours > 0) return `${hours}h ${minutes}m`;
-    return `${minutes}m`;
+    if (minutes > 0) return `${minutes}m`;
+    return `${seconds}s`;
   };
 
   return (

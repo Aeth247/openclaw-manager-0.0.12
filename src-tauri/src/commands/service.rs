@@ -15,6 +15,70 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const SERVICE_PORT: u16 = 18789;
 
+/// 解析 BSD/macOS `ps -o etime=` 输出为秒（格式如 1-02:03:04 / 02:03:04 / 03:04）
+#[cfg(not(windows))]
+fn parse_ps_etime_seconds(line: &str) -> Option<u64> {
+    let s = line.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (days, clock) = match s.find('-') {
+        Some(i) => {
+            let d: u64 = s[..i].parse().ok()?;
+            (d, &s[i + 1..])
+        }
+        None => (0u64, s),
+    };
+    let parts: Vec<&str> = clock.split(':').collect();
+    let (h, m, sec) = match parts.len() {
+        3 => (
+            parts[0].parse().ok()?,
+            parts[1].parse().ok()?,
+            parts[2].parse().ok()?,
+        ),
+        2 => (0u64, parts[0].parse().ok()?, parts[1].parse().ok()?),
+        1 => (0u64, 0u64, parts[0].parse().ok()?),
+        _ => return None,
+    };
+    Some(days * 86_400 + h * 3_600 + m * 60 + sec)
+}
+
+/// 进程已运行秒数（用于概览「运行时间」）
+fn process_uptime_seconds(pid: u32) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($null -eq $p) {{ '' }} else {{ [int64]([DateTime]::UtcNow - $p.StartTime.ToUniversalTime()).TotalSeconds }}",
+            pid
+        );
+        let s = shell::run_powershell_output(&script).ok()?;
+        let n: i64 = s.trim().parse().ok()?;
+        return if n >= 0 { Some(n as u64) } else { None };
+    }
+    #[cfg(not(windows))]
+    {
+        let pid_s = pid.to_string();
+        if let Ok(out) = Command::new("ps").args(["-p", &pid_s, "-o", "etimes="]).output() {
+            if out.status.success() {
+                let txt = String::from_utf8_lossy(&out.stdout);
+                let t = txt.trim();
+                if let Ok(sec) = t.parse::<u64>() {
+                    return Some(sec);
+                }
+            }
+        }
+        if let Ok(out) = Command::new("ps").args(["-p", &pid_s, "-o", "etime="]).output() {
+            if out.status.success() {
+                let txt = String::from_utf8_lossy(&out.stdout);
+                if let Some(sec) = parse_ps_etime_seconds(&txt) {
+                    return Some(sec);
+                }
+            }
+        }
+        None
+    }
+}
+
 /// 检测端口是否有服务在监听，返回 PID
 /// 简单直接：端口被占用 = 服务运行中
 fn check_port_listening(port: u16) -> Option<u32> {
@@ -99,12 +163,13 @@ pub async fn get_service_status() -> Result<ServiceStatus, String> {
             None::<f64>
         }
     });
+    let uptime_seconds = pid.and_then(process_uptime_seconds);
 
     Ok(ServiceStatus {
         running,
         pid,
         port: SERVICE_PORT,
-        uptime_seconds: None,
+        uptime_seconds,
         memory_mb,
         cpu_percent: None,
     })
@@ -341,8 +406,42 @@ pub async fn get_logs(lines: Option<u32>) -> Result<Vec<String>, String> {
         let t = extra.trim();
         if !t.is_empty() {
             let p = PathBuf::from(t);
-            if p != bases[0] {
+            if !bases.iter().any(|b| b == &p) {
                 bases.push(p);
+            }
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(la) = std::env::var("LOCALAPPDATA") {
+        let t = la.trim();
+        if !t.is_empty() {
+            let p = PathBuf::from(t).join("openclaw");
+            if p.exists() && !bases.iter().any(|b| b == &p) {
+                bases.push(p);
+            }
+        }
+    }
+
+    fn collect_logs_recursive(dir: &std::path::Path, depth: u32, acc: &mut Vec<PathBuf>) {
+        if depth == 0 {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_file() {
+                let is_log = p
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("log"))
+                    .unwrap_or(false);
+                if is_log {
+                    acc.push(p);
+                }
+            } else if p.is_dir() {
+                collect_logs_recursive(&p, depth - 1, acc);
             }
         }
     }
@@ -352,6 +451,9 @@ pub async fn get_logs(lines: Option<u32>) -> Result<Vec<String>, String> {
         let preferred = [
             base.join("logs").join("gateway.log"),
             base.join("logs").join("gateway.err.log"),
+            base.join("logs").join("openclaw.log"),
+            base.join("gateway.log"),
+            base.join("gateway.err.log"),
             base.join("stderr.log"),
             base.join("stdout.log"),
         ];
@@ -382,6 +484,17 @@ pub async fn get_logs(lines: Option<u32>) -> Result<Vec<String>, String> {
                 .collect();
             extras.sort();
             for p in extras {
+                if !log_paths.contains(&p) {
+                    log_paths.push(p);
+                }
+            }
+        }
+        // 网关若把日志写在子目录，浅层递归收集 .log（最多 3 层）
+        if base.is_dir() {
+            let mut deep = Vec::new();
+            collect_logs_recursive(base, 3, &mut deep);
+            deep.sort();
+            for p in deep {
                 if !log_paths.contains(&p) {
                     log_paths.push(p);
                 }

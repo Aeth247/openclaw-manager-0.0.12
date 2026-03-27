@@ -131,14 +131,42 @@ pub async fn run_doctor() -> Result<Vec<DiagnosticResult>, String> {
         },
     });
     
-    // 运行 openclaw doctor
+    // 运行 openclaw doctor（输出截断，避免界面巨长、渲染卡顿）
     if openclaw_installed {
         let doctor_result = shell::run_openclaw(&["doctor"]);
+        let combined = match &doctor_result {
+            Ok(s) => s.clone(),
+            Err(e) => e.clone(),
+        };
+        let clean = text::strip_ansi_codes(&combined);
+        let max_lines = 28usize;
+        let max_chars = 2_800usize;
+        let lines: Vec<&str> = clean.lines().collect();
+        let mut msg = if lines.len() <= max_lines && clean.len() <= max_chars {
+            clean
+        } else {
+            let take = lines.len().min(max_lines);
+            let mut m = lines[..take].join("\n");
+            if m.len() > max_chars {
+                m = m.chars().take(max_chars).collect::<String>();
+            }
+            m.push_str("\n…（已截断；完整输出请在终端运行: openclaw doctor）");
+            m
+        };
+        if msg.is_empty() {
+            msg = "（无输出）".into();
+        }
+        // 命令能跑通即标为通过；细节里的警告见截断后的正文（避免误判「整段失败」）
+        let ok = doctor_result.is_ok();
         results.push(DiagnosticResult {
             name: "OpenClaw Doctor".to_string(),
-            passed: doctor_result.is_ok() && !doctor_result.as_ref().unwrap().contains("invalid"),
-            message: doctor_result.unwrap_or_else(|e| e),
-            suggestion: None,
+            passed: ok,
+            message: msg,
+            suggestion: if ok {
+                None
+            } else {
+                Some("若仅有提示性警告可忽略；失败时请把终端里 openclaw doctor 全文发给支持".into())
+            },
         });
     }
     
@@ -231,6 +259,21 @@ fn channel_needs_send_test(channel_type: &str) -> bool {
     }
 }
 
+/// 某行是否描述目标渠道（QQ 在 CLI 里常写成 QQ / qqbot / QQ Bot）
+fn line_matches_channel_line(line_lower: &str, channel_type: &str) -> bool {
+    let ct = channel_type.to_lowercase();
+    if line_lower.contains(&ct) {
+        return true;
+    }
+    if ct == "qqbot" {
+        return line_lower.contains("qqbot")
+            || line_lower.contains("qq bot")
+            || (line_lower.contains("qq") && line_lower.contains("channel"))
+            || (line_lower.contains("qq") && line_lower.contains("openapi"));
+    }
+    false
+}
+
 /// 从文本输出解析渠道状态
 /// 格式: "- Telegram default: enabled, configured, mode:polling, token:config"
 fn parse_channel_status_text(output: &str, channel_type: &str) -> Option<(bool, bool, bool, String)> {
@@ -238,8 +281,9 @@ fn parse_channel_status_text(output: &str, channel_type: &str) -> Option<(bool, 
     
     for line in output.lines() {
         let line = line.trim();
+        let line_lower = line.to_lowercase();
         // 匹配 "- Telegram default: ..." 格式
-        if line.starts_with("- ") && line.to_lowercase().contains(&channel_lower) {
+        if line.starts_with("- ") && line_matches_channel_line(&line_lower, &channel_lower) {
             // 解析状态
             let enabled = line.contains("enabled");
             let configured = line.contains("configured") && !line.contains("not configured");
@@ -313,8 +357,25 @@ pub async fn test_channel(channel_type: String) -> Result<ChannelTestResult, Str
                 }
                 
                 if !channel_ok {
-                    debug_info = format!("无法解析 {} 的状态", channel_type);
-                    info!("[渠道测试] {}", debug_info);
+                    if channel_lower == "qqbot" {
+                        let o = output.to_lowercase();
+                        if o.contains("qqbot")
+                            || o.contains("qq bot")
+                            || (o.contains("qq") && o.contains("register"))
+                        {
+                            channel_ok = true;
+                            status_message =
+                                "已在输出中检测到 QQ 相关渠道/插件（若机器人已在群内回复，可视为正常）"
+                                    .to_string();
+                            debug_info.clear();
+                        } else {
+                            debug_info = format!("无法解析 {} 的状态", channel_type);
+                            info!("[渠道测试] {}", debug_info);
+                        }
+                    } else {
+                        debug_info = format!("无法解析 {} 的状态", channel_type);
+                        info!("[渠道测试] {}", debug_info);
+                    }
                 }
             }
         }

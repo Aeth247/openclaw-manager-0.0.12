@@ -1422,6 +1422,14 @@ pub async fn check_qqbot_plugin() -> Result<QQBotPluginStatus, String> {
         })
     };
 
+    // 先读配置与磁盘，再跑慢速 `plugins list`，缩短侧栏/渠道页等待
+    if let Some(status) = from_config() {
+        return Ok(status);
+    }
+    if let Some(status) = from_disk() {
+        return Ok(status);
+    }
+
     match shell::run_openclaw(&["plugins", "list"]) {
         Ok(output) => {
             debug!("[QQ Bot 插件] plugins list 输出: {}", output);
@@ -1438,24 +1446,11 @@ pub async fn check_qqbot_plugin() -> Result<QQBotPluginStatus, String> {
                     plugin_name: Some("@tencent-connect/openclaw-qqbot".into()),
                 });
             }
-            if let Some(status) = from_config() {
-                info!("[QQ Bot 插件] CLI 未逐行匹配，使用 openclaw.json 判定");
-                return Ok(status);
-            }
-            if let Some(status) = from_disk() {
-                return Ok(status);
-            }
             info!("[QQ Bot 插件] ✗ 未检测到 QQ Bot 插件");
             not_installed()
         }
         Err(e) => {
             warn!("[QQ Bot 插件] plugins list 执行失败: {}", e);
-            if let Some(status) = from_config() {
-                return Ok(status);
-            }
-            if let Some(status) = from_disk() {
-                return Ok(status);
-            }
             not_installed()
         }
     }

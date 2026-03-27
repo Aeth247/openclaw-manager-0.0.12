@@ -217,9 +217,9 @@ function App() {
               <img
                 src="/window-icon.png"
                 alt=""
-                className="h-12 w-12 object-contain rounded-lg bg-surface-elevated/80"
-                width={48}
-                height={48}
+                className="h-14 w-14 object-contain rounded-xl bg-surface-elevated/80"
+                width={56}
+                height={56}
               />
             </div>
             <p style={{ color: 'var(--text-tertiary)' }}>正在启动...</p>
