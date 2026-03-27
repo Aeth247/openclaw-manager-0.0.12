@@ -131,42 +131,40 @@ pub async fn run_doctor() -> Result<Vec<DiagnosticResult>, String> {
         },
     });
     
-    // 运行 openclaw doctor（输出截断，避免界面巨长、渲染卡顿）
+    // 运行 openclaw doctor：界面只显示结论，不把整段 CLI 输出塞进 UI
     if openclaw_installed {
         let doctor_result = shell::run_openclaw(&["doctor"]);
-        let combined = match &doctor_result {
-            Ok(s) => s.clone(),
-            Err(e) => e.clone(),
-        };
-        let clean = text::strip_ansi_codes(&combined);
-        let max_lines = 28usize;
-        let max_chars = 2_800usize;
-        let lines: Vec<&str> = clean.lines().collect();
-        let mut msg = if lines.len() <= max_lines && clean.len() <= max_chars {
-            clean
-        } else {
-            let take = lines.len().min(max_lines);
-            let mut m = lines[..take].join("\n");
-            if m.len() > max_chars {
-                m = m.chars().take(max_chars).collect::<String>();
-            }
-            m.push_str("\n…（已截断；完整输出请在终端运行: openclaw doctor）");
-            m
-        };
-        if msg.is_empty() {
-            msg = "（无输出）".into();
-        }
-        // 命令能跑通即标为通过；细节里的警告见截断后的正文（避免误判「整段失败」）
         let ok = doctor_result.is_ok();
-        results.push(DiagnosticResult {
-            name: "OpenClaw Doctor".to_string(),
-            passed: ok,
-            message: msg,
-            suggestion: if ok {
-                None
+        let (message, suggestion) = if ok {
+            (
+                "Doctor 检查已通过，环境已就绪。".to_string(),
+                None,
+            )
+        } else {
+            let combined = match &doctor_result {
+                Ok(s) => s.as_str(),
+                Err(e) => e.as_str(),
+            };
+            let clean = text::strip_ansi_codes(combined);
+            let max_chars = 800usize;
+            let mut msg = if clean.len() > max_chars {
+                clean.chars().take(max_chars).collect::<String>() + "…"
             } else {
-                Some("若仅有提示性警告可忽略；失败时请把终端里 openclaw doctor 全文发给支持".into())
-            },
+                clean
+            };
+            if msg.trim().is_empty() {
+                msg = "Doctor 执行失败（无详细输出）".into();
+            }
+            (
+                msg,
+                Some("完整日志请在终端运行: openclaw doctor".into()),
+            )
+        };
+        results.push(DiagnosticResult {
+            name: "OpenClaw 环境检查".to_string(),
+            passed: ok,
+            message,
+            suggestion,
         });
     }
     

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
@@ -10,6 +10,7 @@ import { api, ServiceStatus, isTauri } from '../../lib/tauri';
 import { Terminal, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
 import clsx from 'clsx';
 import { EnvironmentStatus } from '../../App';
+import { simplifyGatewayLogs } from '../../lib/gatewayLogView';
 
 interface DashboardProps {
   envStatus: EnvironmentStatus | null;
@@ -114,6 +115,8 @@ export function Dashboard({ envStatus, onSetupComplete }: DashboardProps) {
     }
   };
 
+  const displayLogs = useMemo(() => simplifyGatewayLogs(logs), [logs]);
+
   const getLogLineClass = (line: string) => {
     if (line.includes('error') || line.includes('Error') || line.includes('ERROR')) {
       return 'text-red-400';
@@ -182,8 +185,8 @@ export function Dashboard({ envStatus, onSetupComplete }: DashboardProps) {
               <div className="flex items-center gap-2">
                 <Terminal size={16} className="text-content-tertiary" />
                 <span className="text-sm font-medium text-content-primary">实时日志</span>
-                <span className="text-xs text-content-tertiary">
-                  ({logs.length} 行)
+                <span className="text-xs text-content-tertiary" title="已自动隐藏冗长 ID、路径并合并重复行">
+                  ({displayLogs.length} 条要点)
                 </span>
               </div>
               <div className="flex items-center gap-3">
@@ -236,12 +239,14 @@ export function Dashboard({ envStatus, onSetupComplete }: DashboardProps) {
                       <p className="text-xs">请先在本应用启动服务，或确认上述日志目录下是否存在 gateway.log。</p>
                     )}
                   </div>
+                    ) : displayLogs.length === 0 ? (
+                  <p className="text-content-tertiary text-center py-6">暂无有效日志行。</p>
                 ) : (
                   <>
-                    {logs.map((line, index) => (
+                    {displayLogs.map((line, index) => (
                       <div
-                        key={index}
-                        className={clsx('py-0.5 whitespace-pre-wrap break-all', getLogLineClass(line))}
+                        key={`${index}-${line.slice(0, 48)}`}
+                        className={clsx('py-0.5 whitespace-pre-wrap break-words', getLogLineClass(line))}
                       >
                         {line}
                       </div>
