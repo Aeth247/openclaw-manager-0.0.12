@@ -1840,15 +1840,31 @@ pub async fn get_skills_list() -> Result<Vec<SkillDefinition>, String> {
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
 
-    // 获取已安装的插件列表（通过 openclaw plugins list）
-    let installed_plugins: Vec<String> = match shell::run_openclaw(&["plugins", "list"]) {
-        Ok(output) => {
-            output.lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect()
+    // 已安装插件列表：CLI 可能较慢（杀毒/首次 Node 调度），限时以免技能库页长时间白屏
+    const PLUGINS_LIST_SECS: u64 = 8;
+    let installed_plugins: Vec<String> = match tokio::time::timeout(
+        std::time::Duration::from_secs(PLUGINS_LIST_SECS),
+        tokio::task::spawn_blocking(|| shell::run_openclaw(&["plugins", "list"])),
+    )
+    .await
+    {
+        Ok(Ok(Ok(output))) => output
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        Ok(Ok(Err(_))) => Vec::new(),
+        Ok(Err(e)) => {
+            warn!("[技能库] plugins list 任务失败: {}", e);
+            Vec::new()
         }
-        Err(_) => Vec::new(),
+        Err(_) => {
+            warn!(
+                "[技能库] openclaw plugins list 超过 {}s，已跳过（列表可立即显示；已安装状态或不准确，请稍后刷新）",
+                PLUGINS_LIST_SECS
+            );
+            Vec::new()
+        }
     };
 
     let mut skills = get_preset_skills();

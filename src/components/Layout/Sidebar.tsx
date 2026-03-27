@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { PageType } from '../../App';
 import clsx from 'clsx';
+import { BrandMark } from '../BrandMark';
 
 interface ServiceStatus {
   running: boolean;
@@ -50,22 +51,9 @@ export function Sidebar({ currentPage, onNavigate, serviceStatus }: SidebarProps
         className="h-14 flex items-center px-6 titlebar-drag"
         style={{ borderBottom: '1px solid var(--border-primary)' }}
       >
-        {/* 图标来自 src-tauri/resources：exe_icon.png → /brand-icon.png，window_icon.png → /window-icon.png（npm run icons:gen 同步） */}
+        {/* 仅显示一个品牌位：PNG 来自 resources/exe_icon（icons:gen），窗口角标用 window_icon 由 Tauri 设置 */}
         <div className="flex items-center gap-2 titlebar-no-drag">
-          <img
-            src="/brand-icon.png"
-            alt=""
-            className="h-8 w-8 object-contain rounded-lg shrink-0 bg-surface-elevated/80"
-            width={32}
-            height={32}
-          />
-          <img
-            src="/window-icon.png"
-            alt=""
-            className="h-8 w-8 object-contain rounded-lg shrink-0 bg-surface-elevated/80"
-            width={32}
-            height={32}
-          />
+          <BrandMark className="h-8 w-8 object-contain rounded-lg shrink-0 bg-surface-elevated/80" />
           <div className="min-w-0">
             <h1 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>虾池子</h1>
           </div>

@@ -16,6 +16,7 @@ import { Logs } from './components/Logs';
 import { appLogger } from './lib/logger';
 import { isTauri } from './lib/tauri';
 import { ThemeProvider } from './lib/ThemeContext';
+import { BrandMark } from './components/BrandMark';
 import { Download, X, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 
 export type PageType = 'dashboard' | 'ai' | 'agents' | 'channels' | 'skills' | 'testing' | 'logs' | 'security' | 'settings';
@@ -206,21 +207,8 @@ function App() {
         <div className="flex h-screen items-center justify-center" style={{ backgroundColor: 'var(--bg-app)' }}>
           <div className="fixed inset-0 bg-gradient-radial pointer-events-none" />
           <div className="relative z-10 text-center">
-            <div className="inline-flex items-center justify-center gap-3 mb-4 animate-pulse">
-              <img
-                src="/brand-icon.png"
-                alt=""
-                className="h-14 w-14 object-contain rounded-xl bg-surface-elevated/80"
-                width={56}
-                height={56}
-              />
-              <img
-                src="/window-icon.png"
-                alt=""
-                className="h-14 w-14 object-contain rounded-xl bg-surface-elevated/80"
-                width={56}
-                height={56}
-              />
+            <div className="inline-flex items-center justify-center mb-4 animate-pulse">
+              <BrandMark className="h-14 w-14 object-contain rounded-xl bg-surface-elevated/80" width={56} height={56} />
             </div>
             <p style={{ color: 'var(--text-tertiary)' }}>正在启动...</p>
           </div>

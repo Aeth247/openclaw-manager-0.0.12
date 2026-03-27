@@ -1,10 +1,13 @@
 /**
- * 与 Forever-helper「XC Cursor」一致的资源命名（src-tauri/resources/）：
- * - exe_icon.png     主品牌图 → 生成 Tauri 全套 icon，并同步到前端 public/brand-icon.png
- * - window_icon.png  窗口/任务栏用小图；若不存在则从 exe_icon 复制；同步到 public/window-icon.png
- * - app_icon.ico     由 icon.ico 复制
+ * 图标源目录（优先）：项目根目录 resources/
+ *   D:\...\openclaw-manager-0.0.12\resources\exe_icon.png
+ *   D:\...\openclaw-manager-0.0.12\resources\window_icon.png
+ *   D:\...\openclaw-manager-0.0.12\resources\app-icon.svg
+ * 兼容旧路径：src-tauri/resources/ 下同名文件
  *
- * 生成源优先级：exe_icon.png → window_icon.png → app-icon.svg（不使用虾/爪素材）
+ * 生成输出目录（固定）：src-tauri/resources/（tauri.conf 的 icon / bundle.resources 相对此目录）
+ *
+ * 替换图标后执行：npm run icons:gen，再 tauri build。
  */
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -13,29 +16,39 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
+const userRes = path.join(root, 'resources');
 const tauriRes = path.join(root, 'src-tauri', 'resources');
 
 function toPosix(p) {
   return p.split(path.sep).join('/');
 }
 
+function firstExisting(...paths) {
+  for (const p of paths) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 function main() {
+  fs.mkdirSync(userRes, { recursive: true });
   fs.mkdirSync(tauriRes, { recursive: true });
 
-  const exeIcon = path.join(tauriRes, 'exe_icon.png');
-  const windowIconPath = path.join(tauriRes, 'window_icon.png');
-  const svg = path.join(tauriRes, 'app-icon.svg');
+  const exeIconUser = path.join(userRes, 'exe_icon.png');
+  const winIconUser = path.join(userRes, 'window_icon.png');
+  const svgUser = path.join(userRes, 'app-icon.svg');
+  const exeIconTauri = path.join(tauriRes, 'exe_icon.png');
+  const winIconTauri = path.join(tauriRes, 'window_icon.png');
+  const svgTauri = path.join(tauriRes, 'app-icon.svg');
 
-  let input;
-  if (fs.existsSync(exeIcon)) {
-    input = exeIcon;
-  } else if (fs.existsSync(windowIconPath)) {
-    input = windowIconPath;
-  } else if (fs.existsSync(svg)) {
-    input = svg;
-  } else {
+  const exeIconOut = path.join(tauriRes, 'exe_icon.png');
+  const windowIconOut = path.join(tauriRes, 'window_icon.png');
+
+  const input = firstExisting(exeIconUser, winIconUser, svgUser, exeIconTauri, winIconTauri, svgTauri);
+
+  if (!input) {
     throw new Error(
-      '缺少图标：请在 src-tauri/resources/ 放置 exe_icon.png（与 window_icon.png），或至少提供 app-icon.svg'
+      '缺少图标：请在项目根目录 resources/ 放置 exe_icon.png、window_icon.png 或 app-icon.svg（亦可放在 src-tauri/resources/）'
     );
   }
 
@@ -50,13 +63,19 @@ function main() {
 
   const usedPngSource = path.extname(input).toLowerCase() === '.png';
   const iconPng = path.join(tauriRes, 'icon.png');
-  if (!usedPngSource && fs.existsSync(iconPng)) {
-    fs.copyFileSync(iconPng, exeIcon);
+
+  if (usedPngSource) {
+    fs.copyFileSync(input, exeIconOut);
+  } else if (fs.existsSync(iconPng)) {
+    fs.copyFileSync(iconPng, exeIconOut);
   }
 
-  const windowIcon = path.join(tauriRes, 'window_icon.png');
-  if (fs.existsSync(exeIcon) && !fs.existsSync(windowIcon)) {
-    fs.copyFileSync(exeIcon, windowIcon);
+  if (!fs.existsSync(windowIconOut) && fs.existsSync(exeIconOut)) {
+    fs.copyFileSync(exeIconOut, windowIconOut);
+  }
+
+  if (fs.existsSync(winIconUser)) {
+    fs.copyFileSync(winIconUser, windowIconOut);
   }
 
   const ico = path.join(tauriRes, 'icon.ico');
@@ -65,28 +84,39 @@ function main() {
     fs.copyFileSync(ico, appIco);
   }
 
-  // 前端固定使用 PNG 路径，避免引用虾爪 SVG
   const publicDir = path.join(root, 'public');
   fs.mkdirSync(publicDir, { recursive: true });
   const brandPub = path.join(publicDir, 'brand-icon.png');
   const winPub = path.join(publicDir, 'window-icon.png');
 
-  if (fs.existsSync(exeIcon)) {
-    fs.copyFileSync(exeIcon, brandPub);
+  if (fs.existsSync(exeIconOut)) {
+    fs.copyFileSync(exeIconOut, brandPub);
   } else if (fs.existsSync(iconPng)) {
     fs.copyFileSync(iconPng, brandPub);
   }
 
-  if (fs.existsSync(windowIcon)) {
-    fs.copyFileSync(windowIcon, winPub);
-  } else if (fs.existsSync(exeIcon)) {
-    fs.copyFileSync(exeIcon, winPub);
+  if (fs.existsSync(windowIconOut)) {
+    fs.copyFileSync(windowIconOut, winPub);
+  } else if (fs.existsSync(exeIconOut)) {
+    fs.copyFileSync(exeIconOut, winPub);
   } else if (fs.existsSync(iconPng)) {
     fs.copyFileSync(iconPng, winPub);
   }
 
+  const svgSrc = firstExisting(svgUser, svgTauri);
+  const webBrandSvg = path.join(root, 'src', 'assets', 'brand-icon.svg');
+  if (svgSrc) {
+    fs.mkdirSync(path.dirname(webBrandSvg), { recursive: true });
+    fs.copyFileSync(svgSrc, webBrandSvg);
+  }
+
+  const pubSvg = path.join(publicDir, 'app-icon.svg');
+  if (svgSrc) {
+    fs.copyFileSync(svgSrc, pubSvg);
+  }
+
   console.log(
-    '[icons] 已同步 exe_icon / window_icon → bundle PNG/ICO/ICNS，并写入 public/brand-icon.png、public/window-icon.png'
+    '[icons] 自 resources/（或 src-tauri/resources）生成套装 → src-tauri/resources，并同步 public/ 与 src/assets/brand-icon.svg'
   );
 }
 

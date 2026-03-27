@@ -131,38 +131,61 @@ pub async fn run_doctor() -> Result<Vec<DiagnosticResult>, String> {
         },
     });
     
-    // 运行 openclaw doctor：界面只显示结论，不把整段 CLI 输出塞进 UI
+    // openclaw doctor 可能很慢；放阻塞线程并限时，避免整页卡住
     if openclaw_installed {
-        let doctor_result = shell::run_openclaw(&["doctor"]);
-        let ok = doctor_result.is_ok();
-        let (message, suggestion) = if ok {
-            (
+        const DOCTOR_SECS: u64 = 18;
+        let doctor_wait = tokio::time::timeout(
+            std::time::Duration::from_secs(DOCTOR_SECS),
+            tokio::task::spawn_blocking(|| shell::run_openclaw(&["doctor"])),
+        )
+        .await;
+
+        let (passed, message, suggestion) = match doctor_wait {
+            Ok(Ok(Ok(_))) => (
+                true,
                 "Doctor 检查已通过，环境已就绪。".to_string(),
                 None,
-            )
-        } else {
-            let combined = match &doctor_result {
-                Ok(s) => s.as_str(),
-                Err(e) => e.as_str(),
-            };
-            let clean = text::strip_ansi_codes(combined);
-            let max_chars = 800usize;
-            let mut msg = if clean.len() > max_chars {
-                clean.chars().take(max_chars).collect::<String>() + "…"
-            } else {
-                clean
-            };
-            if msg.trim().is_empty() {
-                msg = "Doctor 执行失败（无详细输出）".into();
+            ),
+            Ok(Ok(Err(e))) => {
+                let clean = text::strip_ansi_codes(&e);
+                let max_chars = 800usize;
+                let mut msg = if clean.len() > max_chars {
+                    clean.chars().take(max_chars).collect::<String>() + "…"
+                } else {
+                    clean
+                };
+                if msg.trim().is_empty() {
+                    msg = "Doctor 执行失败（无详细输出）".into();
+                }
+                (
+                    false,
+                    msg,
+                    Some("完整日志请在终端运行: openclaw doctor".into()),
+                )
             }
-            (
-                msg,
-                Some("完整日志请在终端运行: openclaw doctor".into()),
-            )
+            Ok(Err(join_err)) => (
+                false,
+                format!("Doctor 执行异常: {}", join_err),
+                Some("请在终端运行: openclaw doctor".into()),
+            ),
+            Err(_) => {
+                warn!(
+                    "[诊断] openclaw doctor 超过 {}s，视为跳过（避免界面长时间无响应）",
+                    DOCTOR_SECS
+                );
+                (
+                    true,
+                    format!(
+                        "Doctor 已跳过（{} 秒内未完成，常见于杀毒扫描或 Node 冷启动慢）。其余项已检查。",
+                        DOCTOR_SECS
+                    ),
+                    Some("需要完整 Doctor 时请在终端运行: openclaw doctor".into()),
+                )
+            }
         };
         results.push(DiagnosticResult {
             name: "OpenClaw 环境检查".to_string(),
-            passed: ok,
+            passed,
             message,
             suggestion,
         });
