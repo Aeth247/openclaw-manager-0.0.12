@@ -8,6 +8,7 @@ use log::{debug, error, info, warn};
 use serde_json::{json, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tauri::command;
 
 /// 获取 openclaw.json 配置
@@ -1159,62 +1160,303 @@ pub struct QQBotPluginStatus {
     pub plugin_name: Option<String>,
 }
 
+/// OpenClaw 状态目录候选（插件默认在 `<state>/extensions/`，见官方文档 `$OPENCLAW_STATE_DIR`）
+fn openclaw_state_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(s) = std::env::var("OPENCLAW_STATE_DIR") {
+        let t = s.trim();
+        if !t.is_empty() {
+            roots.push(PathBuf::from(t));
+        }
+    }
+    let home_cfg = PathBuf::from(platform::get_config_dir());
+    if !roots.iter().any(|p| p == &home_cfg) {
+        roots.push(home_cfg);
+    }
+    if let Ok(s) = std::env::var("OPENCLAW_HOME") {
+        let p = PathBuf::from(s.trim());
+        if !p.as_os_str().is_empty() && !roots.iter().any(|x| x == &p) {
+            roots.push(p);
+        }
+    }
+    roots
+}
+
+/// 嵌套配置 / package 名字段用：避免 JSON 里无关字段含 “qqbot” 误报
+fn qqbot_spec_text_is_match(s: &str) -> bool {
+    let l = s.to_lowercase();
+    l.contains("openclaw-qqbot")
+        || l.contains("tencent-connect/openclaw-qqbot")
+        || l.contains("tencent-connect\\openclaw-qqbot")
+        || l.contains("sliverp/qq")
+}
+
 /// 判断 `plugins list` 单行是否表示已安装 QQ 渠道插件（官方 / 旧版社区包）
 fn plugins_list_line_is_qqbot(line: &str) -> bool {
     let l = line.to_lowercase();
-    // 官方：@tencent-connect/openclaw-qqbot；旧版：@sliverp/qqbot；其它含 qqbot 的包名
-    l.contains("openclaw-qqbot")
-        || l.contains("sliverp/qq")
-        || l.contains("qqbot")
+    // 官方：@tencent-connect/openclaw-qqbot；旧版：@sliverp/qqbot；CLI 表格里也会出现渠道 id「qqbot」
+    qqbot_spec_text_is_match(line) || l.contains("qqbot")
+}
+
+/// `plugins list` 为多列表格时，整段输出里仍可能出现包名，但无法按「一行一个包」解析
+fn raw_plugins_list_indicates_qqbot(raw: &str) -> bool {
+    let t = crate::utils::text::strip_ansi_codes(raw);
+    let l = t.to_lowercase();
+    qqbot_spec_text_is_match(&l)
+}
+
+fn version_from_plugin_entry_value(v: &Value) -> Option<String> {
+    let o = v.as_object()?;
+    o.get("version")
+        .or_else(|| o.get("resolvedVersion"))
+        .or_else(|| o.get("pin"))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+}
+
+fn entry_value_suggests_qqbot(val: &Value) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    for ptr in [
+        "spec", "package", "npmSpec", "source", "locator", "resolvedSpec", "id",
+    ] {
+        if let Some(s) = obj.get(ptr).and_then(|x| x.as_str()) {
+            if qqbot_spec_text_is_match(s) || plugins_list_line_is_qqbot(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn preferred_plugin_display_name(key: &str, val: &Value) -> String {
+    if let Some(obj) = val.as_object() {
+        for ptr in ["spec", "package", "npmSpec", "resolvedSpec"] {
+            if let Some(s) = obj.get(ptr).and_then(|x| x.as_str()) {
+                if qqbot_spec_text_is_match(s) || s.contains('@') {
+                    return s.to_string();
+                }
+            }
+        }
+    }
+    if !key.is_empty() && (qqbot_spec_text_is_match(key) || key.contains('@') || key.contains('/')) {
+        return key.to_string();
+    }
+    if plugins_list_line_is_qqbot(key) {
+        return key.to_string();
+    }
+    "@tencent-connect/openclaw-qqbot".to_string()
+}
+
+fn lookup_version_for_plugin_key(config: &Value, key: &str) -> Option<String> {
+    let from_entries = config
+        .pointer("/plugins/entries")
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get(key))
+        .and_then(version_from_plugin_entry_value);
+    let from_installs = config
+        .pointer("/plugins/installs")
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get(key))
+        .and_then(version_from_plugin_entry_value);
+    from_entries.or(from_installs)
+}
+
+fn qqbot_status_from_package_json(path: &Path) -> Option<QQBotPluginStatus> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let v: Value = serde_json::from_str(&content).ok()?;
+    let name = v.get("name").and_then(|x| x.as_str())?;
+    if !(qqbot_spec_text_is_match(name) || plugins_list_line_is_qqbot(name)) {
+        return None;
+    }
+    let ver = v
+        .get("version")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    Some(QQBotPluginStatus {
+        installed: true,
+        version: ver,
+        plugin_name: Some(name.to_string()),
+    })
+}
+
+/// 从磁盘 extensions / node_modules 检测（不依赖 CLI 输出格式）
+fn qqbot_plugin_from_state_dirs() -> Option<QQBotPluginStatus> {
+    for root in openclaw_state_roots() {
+        let scoped_pkg = root
+            .join("node_modules")
+            .join("@tencent-connect")
+            .join("openclaw-qqbot")
+            .join("package.json");
+        if let Some(st) = qqbot_status_from_package_json(&scoped_pkg) {
+            return Some(st);
+        }
+
+        let ext = root.join("extensions");
+        let Ok(rd) = std::fs::read_dir(&ext) else {
+            continue;
+        };
+        for ent in rd.flatten() {
+            let pkg = ent.path().join("package.json");
+            if let Some(st) = qqbot_status_from_package_json(&pkg) {
+                return Some(st);
+            }
+        }
+    }
+    None
+}
+
+fn parse_plugins_list_output(raw: &str) -> Vec<String> {
+    use crate::utils::text;
+    let s = text::strip_ansi_codes(raw.trim());
+    let t = s.trim();
+    if t.starts_with('[') || t.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<Value>(t) {
+            let arr = v
+                .as_array()
+                .cloned()
+                .or_else(|| v.get("plugins").and_then(|x| x.as_array()).cloned());
+            if let Some(arr) = arr {
+                let mut out: Vec<String> = Vec::new();
+                for item in arr {
+                    if let Some(st) = item.as_str() {
+                        out.push(st.to_string());
+                    } else if let Some(obj) = item.as_object() {
+                        let name = obj
+                            .get("name")
+                            .and_then(|x| x.as_str())
+                            .or_else(|| obj.get("package").and_then(|x| x.as_str()))
+                            .or_else(|| obj.get("id").and_then(|x| x.as_str()));
+                        if let Some(n) = name {
+                            out.push(n.to_string());
+                        }
+                    }
+                }
+                if !out.is_empty() {
+                    return out;
+                }
+            }
+        }
+    }
+    t.lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+fn qqbot_plugin_from_config(config: &Value) -> Option<(String, Option<String>)> {
+    if let Some(arr) = config.pointer("/plugins/allow").and_then(|v| v.as_array()) {
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                if plugins_list_line_is_qqbot(s) {
+                    let ver = lookup_version_for_plugin_key(config, s);
+                    return Some((s.to_string(), ver));
+                }
+            }
+        }
+    }
+
+    for ptr in ["/plugins/entries", "/plugins/installs"] {
+        if let Some(obj) = config.pointer(ptr).and_then(|v| v.as_object()) {
+            for (k, v) in obj {
+                if plugins_list_line_is_qqbot(k) || entry_value_suggests_qqbot(v) {
+                    let name = preferred_plugin_display_name(k, v);
+                    let ver = version_from_plugin_entry_value(v)
+                        .or_else(|| lookup_version_for_plugin_key(config, k));
+                    return Some((name, ver));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn qqbot_status_from_list_line(line: &str) -> QQBotPluginStatus {
+    let version = if line.contains('@') {
+        line.split('@').last().map(|s| s.trim().to_string())
+    } else {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        parts
+            .iter()
+            .find(|p| p.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))
+            .map(|s| s.to_string())
+    };
+    QQBotPluginStatus {
+        installed: true,
+        version,
+        plugin_name: Some(line.trim().to_string()),
+    }
 }
 
 /// 检查 QQ Bot 插件是否已安装
 #[command]
 pub async fn check_qqbot_plugin() -> Result<QQBotPluginStatus, String> {
     info!("[QQ Bot 插件] 检查 QQ Bot 插件安装状态...");
-    
-    // 执行 openclaw plugins list 命令
+
+    let from_config = || -> Option<QQBotPluginStatus> {
+        let config = load_openclaw_config().ok()?;
+        let (name, ver) = qqbot_plugin_from_config(&config)?;
+        info!("[QQ Bot 插件] 从 openclaw.json 检测到 QQ 插件: {}", name);
+        Some(QQBotPluginStatus {
+            installed: true,
+            version: ver,
+            plugin_name: Some(name),
+        })
+    };
+
+    let from_disk = || -> Option<QQBotPluginStatus> {
+        let st = qqbot_plugin_from_state_dirs()?;
+        info!(
+            "[QQ Bot 插件] 从状态目录 extensions/node_modules 检测到: {:?}",
+            st.plugin_name
+        );
+        Some(st)
+    };
+
+    let not_installed = || {
+        Ok(QQBotPluginStatus {
+            installed: false,
+            version: None,
+            plugin_name: None,
+        })
+    };
+
     match shell::run_openclaw(&["plugins", "list"]) {
         Ok(output) => {
             debug!("[QQ Bot 插件] plugins list 输出: {}", output);
-            
-            let lines: Vec<&str> = output.lines().collect();
-            let qqbot_line = lines.iter().find(|line| plugins_list_line_is_qqbot(line));
-            
-            if let Some(line) = qqbot_line {
+            let lines = parse_plugins_list_output(&output);
+            if let Some(line) = lines.iter().find(|line| plugins_list_line_is_qqbot(line)) {
                 info!("[QQ Bot 插件] ✓ QQ Bot 插件已安装: {}", line);
-                
-                // 尝试解析版本号
-                let version = if line.contains('@') {
-                    line.split('@').last().map(|s| s.trim().to_string())
-                } else {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    parts.iter()
-                        .find(|p| p.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))
-                        .map(|s| s.to_string())
-                };
-                
-                Ok(QQBotPluginStatus {
-                    installed: true,
-                    version,
-                    plugin_name: Some(line.trim().to_string()),
-                })
-            } else {
-                info!("[QQ Bot 插件] ✗ QQ Bot 插件未安装");
-                Ok(QQBotPluginStatus {
-                    installed: false,
-                    version: None,
-                    plugin_name: None,
-                })
+                return Ok(qqbot_status_from_list_line(line));
             }
+            if raw_plugins_list_indicates_qqbot(&output) {
+                info!("[QQ Bot 插件] ✓ 列表输出含 QQ 包标识（表格/多列格式）");
+                return Ok(QQBotPluginStatus {
+                    installed: true,
+                    version: None,
+                    plugin_name: Some("@tencent-connect/openclaw-qqbot".into()),
+                });
+            }
+            if let Some(status) = from_config() {
+                info!("[QQ Bot 插件] CLI 未逐行匹配，使用 openclaw.json 判定");
+                return Ok(status);
+            }
+            if let Some(status) = from_disk() {
+                return Ok(status);
+            }
+            info!("[QQ Bot 插件] ✗ 未检测到 QQ Bot 插件");
+            not_installed()
         }
         Err(e) => {
-            warn!("[QQ Bot 插件] 检查插件列表失败: {}", e);
-            Ok(QQBotPluginStatus {
-                installed: false,
-                version: None,
-                plugin_name: None,
-            })
+            warn!("[QQ Bot 插件] plugins list 执行失败: {}", e);
+            if let Some(status) = from_config() {
+                return Ok(status);
+            }
+            if let Some(status) = from_disk() {
+                return Ok(status);
+            }
+            not_installed()
         }
     }
 }

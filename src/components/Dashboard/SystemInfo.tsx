@@ -78,13 +78,18 @@ export function SystemInfo() {
               <XCircle size={16} className="text-red-400" />
             )}
           </div>
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <p className="text-xs text-content-tertiary">OpenClaw</p>
             <p className="text-sm text-content-primary">
               {info?.openclaw_installed
                 ? info.openclaw_version || t('systemInfo.installed')
                 : t('systemInfo.notInstalled')}
             </p>
+            {info?.openclaw_cli_path ? (
+              <p className="text-xs text-content-tertiary font-mono truncate mt-1" title={info.openclaw_cli_path}>
+                CLI: {info.openclaw_cli_path}
+              </p>
+            ) : null}
           </div>
         </div>
 

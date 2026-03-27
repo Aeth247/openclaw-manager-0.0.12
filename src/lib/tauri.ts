@@ -39,6 +39,8 @@ export interface SystemInfo {
   arch: string;
   openclaw_installed: boolean;
   openclaw_version: string | null;
+  /** OpenClaw CLI 路径（Windows 常见为 .cmd） */
+  openclaw_cli_path: string | null;
   node_version: string | null;
   config_dir: string;
 }

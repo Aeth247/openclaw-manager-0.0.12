@@ -1,6 +1,5 @@
 use crate::models::ServiceStatus;
-use crate::utils::shell;
-use crate::utils::platform;
+use crate::utils::{platform, shell};
 use tauri::command;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -60,19 +59,53 @@ fn check_port_listening(port: u16) -> Option<u32> {
     }
 }
 
+#[cfg(windows)]
+fn windows_process_working_set_mb(pid: u32) -> Option<f64> {
+    let mut cmd = Command::new("tasklist");
+    cmd.args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"]);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = shell::decode_cli_output_bytes(&out.stdout);
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = line.split("\",\"").collect();
+    let last = parts.last()?.trim_end_matches('"');
+    let mem = last.strip_suffix(" K")?;
+    let kb: f64 = mem.replace(",", "").parse().ok()?;
+    let mb = kb / 1024.0;
+    Some((mb * 100.0).round() / 100.0)
+}
+
 /// 获取服务状态（简单版：直接检查端口占用）
 #[command]
 pub async fn get_service_status() -> Result<ServiceStatus, String> {
     // 简单直接：检查端口是否被占用
     let pid = check_port_listening(SERVICE_PORT);
     let running = pid.is_some();
-    
+
+    let memory_mb = pid.and_then(|p| {
+        #[cfg(windows)]
+        {
+            windows_process_working_set_mb(p)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = p;
+            None::<f64>
+        }
+    });
+
     Ok(ServiceStatus {
         running,
         pid,
         port: SERVICE_PORT,
         uptime_seconds: None,
-        memory_mb: None,
+        memory_mb,
         cpu_percent: None,
     })
 }
@@ -260,54 +293,105 @@ pub async fn restart_service() -> Result<String, String> {
     }
 }
 
-/// 读取文本文件末尾至多 max_lines 行非空行（Windows 无 tail 也可用）
-fn read_tail_lines(path: &std::path::Path, max_lines: u32) -> std::io::Result<Vec<String>> {
-    let content = std::fs::read_to_string(path)?;
+/// 读取日志文件（兼容 GBK/UTF-8），取末尾至多 max_lines 行
+fn read_tail_lines_from_file(path: &std::path::Path, max_lines: u32, label: &str) -> std::io::Result<Vec<String>> {
+    let bytes = std::fs::read(path)?;
+    let content = shell::decode_cli_output_bytes(&bytes);
     let mut lines: Vec<String> = content
         .lines()
-        .map(|l| l.trim())
+        .map(|l| l.trim_end())
         .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
+        .map(|l| {
+            if label.is_empty() {
+                l.to_string()
+            } else {
+                format!("[{}] {}", label, l)
+            }
+        })
         .collect();
-    let n = max_lines as usize;
-    if lines.len() > n {
-        let start = lines.len() - n;
+    let cap = max_lines as usize;
+    if lines.len() > cap {
+        let start = lines.len() - cap;
         lines = lines.split_off(start);
     }
     Ok(lines)
 }
 
-/// 获取日志（直接读取日志文件；Windows 不使用外部 tail）
+/// 获取日志（扫描配置目录下 logs/*.log，并兼容 OPENCLAW_HOME）
 #[command]
 pub async fn get_logs(lines: Option<u32>) -> Result<Vec<String>, String> {
     let n = lines.unwrap_or(100);
-    let base = PathBuf::from(platform::get_config_dir());
-
-    let log_files = vec![
-        base.join("logs").join("gateway.log"),
-        base.join("logs").join("gateway.err.log"),
-        base.join("stderr.log"),
-        base.join("stdout.log"),
-    ];
-
-    let mut all_lines: Vec<String> = Vec::new();
-
-    for log_file in log_files {
-        if !log_file.exists() {
-            continue;
-        }
-        match read_tail_lines(&log_file, n) {
-            Ok(mut chunk) => all_lines.append(&mut chunk),
-            Err(e) => debug!("读取 {:?} 失败: {}", log_file, e),
+    let mut bases: Vec<PathBuf> = Vec::new();
+    bases.push(PathBuf::from(platform::get_config_dir()));
+    if let Ok(extra) = std::env::var("OPENCLAW_HOME") {
+        let t = extra.trim();
+        if !t.is_empty() {
+            let p = PathBuf::from(t);
+            if p != bases[0] {
+                bases.push(p);
+            }
         }
     }
 
-    all_lines.sort();
-    all_lines.dedup();
-    let total = all_lines.len();
-    if total > n as usize {
-        all_lines = all_lines.split_off(total - n as usize);
+    let mut log_paths: Vec<PathBuf> = Vec::new();
+    for base in &bases {
+        let preferred = [
+            base.join("logs").join("gateway.log"),
+            base.join("logs").join("gateway.err.log"),
+            base.join("stderr.log"),
+            base.join("stdout.log"),
+        ];
+        for p in preferred {
+            if p.is_file() {
+                log_paths.push(p);
+            }
+        }
+
+        let logs_dir = base.join("logs");
+        if logs_dir.is_dir() {
+            let mut extras: Vec<PathBuf> = std::fs::read_dir(&logs_dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| {
+                    let p = e.path();
+                    if !p.is_file() {
+                        return None;
+                    }
+                    let is_log = p
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("log"))
+                        .unwrap_or(false);
+                    is_log.then_some(p)
+                })
+                .collect();
+            extras.sort();
+            for p in extras {
+                if !log_paths.contains(&p) {
+                    log_paths.push(p);
+                }
+            }
+        }
     }
 
-    Ok(all_lines)
+    let multi_file = log_paths.len() > 1;
+    let mut combined: Vec<String> = Vec::new();
+    for path in log_paths {
+        let label = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("log");
+        let label = if multi_file { label } else { "" };
+        match read_tail_lines_from_file(&path, n, label) {
+            Ok(mut chunk) => combined.append(&mut chunk),
+            Err(e) => debug!("读取 {:?} 失败: {}", path, e),
+        }
+    }
+
+    if combined.len() > n as usize {
+        combined = combined.split_off(combined.len() - n as usize);
+    }
+
+    Ok(combined)
 }

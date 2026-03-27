@@ -224,8 +224,17 @@ export function Dashboard({ envStatus, onSetupComplete }: DashboardProps) {
             {logsExpanded && (
               <div ref={logsContainerRef} className="h-64 overflow-y-auto p-4 font-mono text-xs leading-relaxed bg-surface-sidebar">
                 {logs.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-content-tertiary">
-                    <p>暂无日志，请先启动服务</p>
+                  <div className="h-full flex flex-col items-center justify-center text-content-tertiary px-4 text-center gap-2">
+                    <p>未读取到网关日志文件。</p>
+                    {status?.running ? (
+                      <p className="text-xs text-content-tertiary max-w-md">
+                        服务已在运行（PID {status.pid ?? '—'}）。若网关由本机其它方式启动，日志通常在{' '}
+                        <span className="font-mono text-content-secondary">用户目录\.openclaw\logs\</span>；亦可设置环境变量{' '}
+                        <span className="font-mono">OPENCLAW_HOME</span>。请往下查看「系统信息」中的配置目录与 OpenClaw CLI 路径。
+                      </p>
+                    ) : (
+                      <p className="text-xs">请先在本应用启动服务，或确认上述日志目录下是否存在 gateway.log。</p>
+                    )}
                   </div>
                 ) : (
                   <>

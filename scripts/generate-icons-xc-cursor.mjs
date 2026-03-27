@@ -23,16 +23,19 @@ function main() {
   fs.mkdirSync(tauriRes, { recursive: true });
 
   const exeIcon = path.join(tauriRes, 'exe_icon.png');
+  const publicClaw = path.join(root, 'public', 'claw.svg');
   const svg = path.join(tauriRes, 'app-icon.svg');
 
   let input;
   if (fs.existsSync(exeIcon)) {
     input = exeIcon;
+  } else if (fs.existsSync(publicClaw)) {
+    input = publicClaw;
   } else if (fs.existsSync(svg)) {
     input = svg;
   } else {
     throw new Error(
-      '缺少图标源：请在 src-tauri/resources/ 放置 exe_icon.png（与 XC Cursor 的 resources/exe_icon.png 对齐）或 app-icon.svg'
+      '缺少图标源：请提供 public/claw.svg，或在 src-tauri/resources/ 放置 exe_icon.png / app-icon.svg'
     );
   }
 

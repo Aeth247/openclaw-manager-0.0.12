@@ -12,6 +12,38 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// 解码 CLI 子进程输出。中文 Windows 下控制台多为 GBK，直接用 UTF-8 会得到乱码或问号。
+pub fn decode_cli_output_bytes(bytes: &[u8]) -> String {
+    #[cfg(windows)]
+    {
+        use encoding_rs::GBK;
+        if std::str::from_utf8(bytes).is_ok() {
+            return String::from_utf8_lossy(bytes).into_owned();
+        }
+        let (cow, _, had_errors) = GBK.decode(bytes);
+        if had_errors {
+            String::from_utf8_lossy(bytes).into_owned()
+        } else {
+            cow.into_owned()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+fn merge_cli_stdout_stderr(stdout: &str, stderr: &str) -> String {
+    let a = stdout.trim();
+    let b = stderr.trim();
+    match (a.is_empty(), b.is_empty()) {
+        (false, false) => format!("{}\n{}", a, b),
+        (false, _) => a.to_string(),
+        (_, false) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// 获取扩展的 PATH 环境变量
 /// GUI 应用启动时可能没有继承用户 shell 的 PATH，需要手动添加常见路径
 pub fn get_extended_path() -> String {
@@ -28,6 +60,14 @@ pub fn get_extended_path() -> String {
         }
         if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
             paths.push(format!("{}\\nodejs", pf86));
+        }
+        // 用户自定义 npm 全局前缀（例如 prefix=D:\Dev-code\nodejs\node_global）
+        if let Ok(prefix) = std::env::var("npm_config_prefix") {
+            let prefix = prefix.trim();
+            if !prefix.is_empty() {
+                paths.push(prefix.to_string());
+                paths.push(format!("{}\\bin", prefix));
+            }
         }
         if let Ok(nvm_symlink) = std::env::var("NVM_SYMLINK") {
             paths.push(nvm_symlink);
@@ -597,8 +637,8 @@ pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
     
     match output {
         Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            let stdout = decode_cli_output_bytes(&out.stdout);
+            let stderr = decode_cli_output_bytes(&out.stderr);
             debug!("[Shell] 命令退出码: {:?}", out.status.code());
 
             // --version：即使 exit code 非 0，只要解析出版本即视为成功（部分环境 stderr 混杂警告）
@@ -611,16 +651,12 @@ pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
             }
 
             if out.status.success() {
-                let text = if !stdout.trim().is_empty() {
-                    stdout.trim().to_string()
-                } else {
-                    stderr.trim().to_string()
-                };
+                let text = merge_cli_stdout_stderr(&stdout, &stderr);
                 debug!("[Shell] 命令执行成功, 输出长度: {}", text.len());
                 Ok(text)
             } else {
                 debug!("[Shell] 命令执行失败, stderr: {}", stderr);
-                Err(format!("{}\n{}", stdout, stderr).trim().to_string())
+                Err(merge_cli_stdout_stderr(&stdout, &stderr))
             }
         }
         Err(e) => {
@@ -772,24 +808,28 @@ pub fn spawn_openclaw_gateway() -> io::Result<()> {
 }
 
 /// 检查命令是否存在
+///
+/// 必须用 `#[cfg]` 分平台实现：若写成 `if platform::is_windows() { ... creation_flags ... }`，
+/// 在 Linux/macOS 上仍会编译 Windows 分支，而 `creation_flags` / `CREATE_NO_WINDOW` 仅在 Windows 可用。
+#[cfg(windows)]
 pub fn command_exists(cmd: &str) -> bool {
-    if platform::is_windows() {
-        // Windows：where 必须带上与执行 openclaw 相同的 PATH，否则 GUI 进程常误判为不存在
-        let mut command = Command::new("cmd");
-        command
-            .args(["/d", "/s", "/c", &format!("where {}", cmd)])
-            .env("PATH", get_extended_path());
-        command.creation_flags(CREATE_NO_WINDOW);
-        command
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    } else {
-        // Unix: 使用 which 命令
-        Command::new("which")
-            .arg(cmd)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
+    // Windows：where 必须带上与执行 openclaw 相同的 PATH，否则 GUI 进程常误判为不存在
+    let mut command = Command::new("cmd");
+    command
+        .args(["/d", "/s", "/c", &format!("where {}", cmd)])
+        .env("PATH", get_extended_path());
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+pub fn command_exists(cmd: &str) -> bool {
+    Command::new("which")
+        .arg(cmd)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }

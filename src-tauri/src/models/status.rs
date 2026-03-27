@@ -43,6 +43,8 @@ pub struct SystemInfo {
     pub openclaw_installed: bool,
     /// OpenClaw 版本
     pub openclaw_version: Option<String>,
+    /// OpenClaw CLI 可执行文件路径（Windows 常为 .cmd）
+    pub openclaw_cli_path: Option<String>,
     /// Node.js 版本
     pub node_version: Option<String>,
     /// 配置目录

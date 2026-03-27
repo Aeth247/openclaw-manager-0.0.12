@@ -61,6 +61,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            build-essential \
+            pkg-config \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
@@ -91,6 +93,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # 与 Tauri beforeBuildCommand 一致，提前跑一遍便于日志里区分：是前端/图标还是 Rust/打包失败
+      - name: Build frontend (icons + TypeScript + Vite)
+        run: npm run build
+
       # ── 构建 ─────────────────────────────────────────────
       - name: Build Tauri app (macOS Universal)
         if: matrix.platform == 'macos-latest'
@@ -99,6 +105,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target universal-apple-darwin
+          includeUpdaterJson: false
 
       - name: Build Tauri app
         if: matrix.platform != 'macos-latest'
@@ -107,6 +114,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target ${{ matrix.target }}
+          includeUpdaterJson: false
 
       # ── 上传构建产物 ─────────────────────────────────────
       - name: Upload macOS artifacts

@@ -1,38 +1,12 @@
 use crate::models::{AITestResult, ChannelTestResult, DiagnosticResult, SystemInfo, SecurityIssue, SecurityFixResult};
-use crate::utils::{platform, shell};
+use crate::utils::{platform, shell, text};
 use tauri::command;
 use log::{info, warn, error, debug};
-
-/// 去除 ANSI 转义序列（颜色代码等）
-fn strip_ansi_codes(input: &str) -> String {
-    // 匹配 ANSI 转义序列: ESC[ ... m 或 ESC[ ... 其他控制字符
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // 跳过 ESC[...m 序列
-            if chars.peek() == Some(&'[') {
-                chars.next(); // 跳过 '['
-                // 跳过直到遇到字母
-                while let Some(&next) = chars.peek() {
-                    chars.next();
-                    if next.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
 
 /// 从混合输出中提取 JSON 内容
 fn extract_json_from_output(output: &str) -> Option<String> {
     // 先去除 ANSI 颜色代码
-    let clean_output = strip_ansi_codes(output);
+    let clean_output = text::strip_ansi_codes(output);
     
     // 按行查找 JSON 开始位置
     let lines: Vec<&str> = clean_output.lines().collect();
@@ -576,6 +550,7 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
         arch,
         openclaw_installed,
         openclaw_version,
+        openclaw_cli_path: shell::get_openclaw_path(),
         node_version,
         config_dir: platform::get_config_dir(),
     })
