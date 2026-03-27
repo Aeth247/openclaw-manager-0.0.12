@@ -23,9 +23,48 @@ function toPosix(p) {
   return p.split(path.sep).join('/');
 }
 
-function firstExisting(...paths) {
-  for (const p of paths) {
-    if (fs.existsSync(p)) return p;
+/** PNG 文件头；签名不符多为 JPEG/WebP 被误命名为 .png */
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function isValidPng(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(8);
+    fs.readSync(fd, buf, 0, 8, 0);
+    fs.closeSync(fd);
+    return buf.equals(PNG_SIG);
+  } catch {
+    return false;
+  }
+}
+
+function isValidSvg(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const head = raw.slice(0, 800).trimStart();
+    return head.startsWith('<svg') || head.startsWith('<?xml');
+  } catch {
+    return false;
+  }
+}
+
+function pickIconSource(candidatePaths) {
+  for (const p of candidatePaths) {
+    if (!fs.existsSync(p)) continue;
+    const ext = path.extname(p).toLowerCase();
+    if (ext === '.png') {
+      if (isValidPng(p)) return p;
+      console.warn(
+        `[icons] 跳过无效 PNG（签名不符；请用真 PNG 或先转换图片）: ${path.relative(root, p)}`
+      );
+      continue;
+    }
+    if (ext === '.svg') {
+      if (isValidSvg(p)) return p;
+      console.warn(`[icons] 跳过无法识别的 SVG: ${path.relative(root, p)}`);
+      continue;
+    }
+    return p;
   }
   return null;
 }
@@ -44,11 +83,18 @@ function main() {
   const exeIconOut = path.join(tauriRes, 'exe_icon.png');
   const windowIconOut = path.join(tauriRes, 'window_icon.png');
 
-  const input = firstExisting(exeIconUser, winIconUser, svgUser, exeIconTauri, winIconTauri, svgTauri);
+  const input = pickIconSource([
+    exeIconUser,
+    winIconUser,
+    svgUser,
+    exeIconTauri,
+    winIconTauri,
+    svgTauri,
+  ]);
 
   if (!input) {
     throw new Error(
-      '缺少图标：请在项目根目录 resources/ 放置 exe_icon.png、window_icon.png 或 app-icon.svg（亦可放在 src-tauri/resources/）'
+      '缺少可用图标：请在 resources/ 提供有效 PNG（真 PNG 签名）或 app-icon.svg；勿将 JPG/WebP 改名为 .png'
     );
   }
 
@@ -74,8 +120,12 @@ function main() {
     fs.copyFileSync(exeIconOut, windowIconOut);
   }
 
-  if (fs.existsSync(winIconUser)) {
+  if (fs.existsSync(winIconUser) && isValidPng(winIconUser)) {
     fs.copyFileSync(winIconUser, windowIconOut);
+  } else if (fs.existsSync(winIconUser) && !isValidPng(winIconUser)) {
+    console.warn(
+      `[icons] window_icon.png 非有效 PNG，已忽略: ${path.relative(root, winIconUser)}`
+    );
   }
 
   const ico = path.join(tauriRes, 'icon.ico');
@@ -103,7 +153,13 @@ function main() {
     fs.copyFileSync(iconPng, winPub);
   }
 
-  const svgSrc = firstExisting(svgUser, svgTauri);
+  let svgSrc = null;
+  for (const p of [svgUser, svgTauri]) {
+    if (fs.existsSync(p) && isValidSvg(p)) {
+      svgSrc = p;
+      break;
+    }
+  }
   const webBrandSvg = path.join(root, 'src', 'assets', 'brand-icon.svg');
   if (svgSrc) {
     fs.mkdirSync(path.dirname(webBrandSvg), { recursive: true });
