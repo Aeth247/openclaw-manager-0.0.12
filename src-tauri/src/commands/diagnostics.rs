@@ -537,7 +537,7 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
     
     let openclaw_installed = shell::get_openclaw_path().is_some();
     let openclaw_version = if openclaw_installed {
-        shell::run_openclaw(&["--version"]).ok()
+        shell::get_openclaw_version_for_display()
     } else {
         None
     };

@@ -1,10 +1,10 @@
 /**
- * 与 Forever-helper「XC Cursor」一致的资源命名（resources/ 目录）：
- * - exe_icon.png    PyInstaller/Nuitka 里用作 exe 主图；此处优先作为 tauri icon 的输入
- * - window_icon.png 与 XC 的窗口图同名；仅当该文件不存在时才从 exe_icon 复制一份（你也可自备第二张图）
- * - app_icon.ico    XC / Inno 命名习惯；由 tauri 生成的 icon.ico 复制而来
+ * 与 Forever-helper「XC Cursor」一致的资源命名（src-tauri/resources/）：
+ * - exe_icon.png     主品牌图 → 生成 Tauri 全套 icon，并同步到前端 public/brand-icon.png
+ * - window_icon.png  窗口/任务栏用小图；若不存在则从 exe_icon 复制；同步到 public/window-icon.png
+ * - app_icon.ico     由 icon.ico 复制
  *
- * 若尚无 exe_icon.png，则退回到同目录下的 app-icon.svg。
+ * 生成源优先级：exe_icon.png → window_icon.png → app-icon.svg（不使用虾/爪素材）
  */
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -23,19 +23,19 @@ function main() {
   fs.mkdirSync(tauriRes, { recursive: true });
 
   const exeIcon = path.join(tauriRes, 'exe_icon.png');
-  const publicClaw = path.join(root, 'public', 'claw.svg');
+  const windowIconPath = path.join(tauriRes, 'window_icon.png');
   const svg = path.join(tauriRes, 'app-icon.svg');
 
   let input;
   if (fs.existsSync(exeIcon)) {
     input = exeIcon;
-  } else if (fs.existsSync(publicClaw)) {
-    input = publicClaw;
+  } else if (fs.existsSync(windowIconPath)) {
+    input = windowIconPath;
   } else if (fs.existsSync(svg)) {
     input = svg;
   } else {
     throw new Error(
-      '缺少图标源：请提供 public/claw.svg，或在 src-tauri/resources/ 放置 exe_icon.png / app-icon.svg'
+      '缺少图标：请在 src-tauri/resources/ 放置 exe_icon.png（与 window_icon.png），或至少提供 app-icon.svg'
     );
   }
 
@@ -65,8 +65,28 @@ function main() {
     fs.copyFileSync(ico, appIco);
   }
 
+  // 前端固定使用 PNG 路径，避免引用虾爪 SVG
+  const publicDir = path.join(root, 'public');
+  fs.mkdirSync(publicDir, { recursive: true });
+  const brandPub = path.join(publicDir, 'brand-icon.png');
+  const winPub = path.join(publicDir, 'window-icon.png');
+
+  if (fs.existsSync(exeIcon)) {
+    fs.copyFileSync(exeIcon, brandPub);
+  } else if (fs.existsSync(iconPng)) {
+    fs.copyFileSync(iconPng, brandPub);
+  }
+
+  if (fs.existsSync(windowIcon)) {
+    fs.copyFileSync(windowIcon, winPub);
+  } else if (fs.existsSync(exeIcon)) {
+    fs.copyFileSync(exeIcon, winPub);
+  } else if (fs.existsSync(iconPng)) {
+    fs.copyFileSync(iconPng, winPub);
+  }
+
   console.log(
-    '[icons] 已按 XC Cursor 资源名同步：exe_icon.png、window_icon.png、app_icon.ico，以及 Tauri bundle 用 PNG/ICNS'
+    '[icons] 已同步 exe_icon / window_icon → bundle PNG/ICO/ICNS，并写入 public/brand-icon.png、public/window-icon.png'
   );
 }
 

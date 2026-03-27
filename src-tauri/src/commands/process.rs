@@ -16,18 +16,13 @@ pub async fn check_openclaw_installed() -> Result<bool, String> {
 #[command]
 pub async fn get_openclaw_version() -> Result<Option<String>, String> {
     info!("[进程检查] 获取 OpenClaw 版本...");
-    // 使用 run_openclaw 来获取版本
-    match shell::run_openclaw(&["--version"]) {
-        Ok(version) => {
-            let v = version.trim().to_string();
-            info!("[进程检查] OpenClaw 版本: {}", v);
-            Ok(Some(v))
-        },
-        Err(e) => {
-            debug!("[进程检查] 获取版本失败: {}", e);
-            Ok(None)
-        },
+    let version = shell::get_openclaw_version_for_display();
+    if let Some(ref v) = version {
+        info!("[进程检查] OpenClaw 版本: {}", v);
+    } else {
+        debug!("[进程检查] 未能解析 OpenClaw 版本（CLI 与 package.json 均无）");
     }
+    Ok(version)
 }
 
 /// 检查端口是否被占用（通过尝试连接 openclaw gateway）

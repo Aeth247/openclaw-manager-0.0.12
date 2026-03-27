@@ -289,10 +289,7 @@ fn get_windows_node_paths() -> Vec<String> {
 
 /// 获取 OpenClaw 版本
 fn get_openclaw_version() -> Option<String> {
-    // 使用 run_openclaw 统一处理各平台
-    shell::run_openclaw(&["--version"])
-        .ok()
-        .map(|v| v.trim().to_string())
+    shell::get_openclaw_version_for_display()
 }
 
 /// 检查 Node.js 版本是否 >= 22

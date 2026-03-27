@@ -9,6 +9,8 @@ mod models;
 mod utils;
 
 use commands::{config, diagnostics, installer, process, service};
+use tauri::path::BaseDirectory;
+use tauri::Manager;
 
 fn main() {
     // 初始化日志 - 默认显示 info 级别日志
@@ -23,6 +25,37 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let load_res = |name: &str| {
+                    app.path()
+                        .resolve(name, BaseDirectory::Resource)
+                        .ok()
+                        .and_then(|p| tauri::image::Image::from_path(&p).ok())
+                };
+                let load_dev = |name: &str| {
+                    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources")
+                        .join(name);
+                    tauri::image::Image::from_path(&p).ok()
+                };
+                let icon = load_res("window_icon.png")
+                    .or_else(|| load_res("32x32.png"))
+                    .or_else(|| load_dev("window_icon.png"))
+                    .or_else(|| load_dev("32x32.png"));
+                match icon {
+                    Some(icon) => {
+                        if let Err(e) = window.set_icon(icon) {
+                            log::warn!("设置窗口图标失败: {}", e);
+                        }
+                    }
+                    None => log::warn!(
+                        "未找到 window_icon.png / 32x32.png：请运行 npm run icons:gen"
+                    ),
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // 服务管理
             service::get_service_status,

@@ -6,11 +6,17 @@ use crate::utils::file;
 use log::{info, debug, warn};
 
 #[cfg(windows)]
+use serde_json::Value as JsonValue;
+
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 /// Windows CREATE_NO_WINDOW 标志，用于隐藏控制台窗口
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// 默认的 Gateway Token
+pub const DEFAULT_GATEWAY_TOKEN: &str = "openclaw-manager-local-token";
 
 /// 解码 CLI 子进程输出。中文 Windows 下控制台多为 GBK，直接用 UTF-8 会得到乱码或问号。
 pub fn decode_cli_output_bytes(bytes: &[u8]) -> String {
@@ -44,6 +50,65 @@ fn merge_cli_stdout_stderr(stdout: &str, stderr: &str) -> String {
     }
 }
 
+/// 从 `~/.npmrc`（及相同语法的用户级配置）解析 `prefix=...`，用于 GUI 进程未继承 shell PATH 时的全局包路径。
+fn parse_npmrc_prefix_lines(content: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let rest = line.strip_prefix("prefix").map(str::trim_start);
+        let Some(rest) = rest else {
+            continue;
+        };
+        let rest = match rest.strip_prefix('=') {
+            Some(r) => r.trim(),
+            None => continue,
+        };
+        let val = rest.trim_matches('"').trim_matches('\'');
+        if !val.is_empty() {
+            v.push(val.to_string());
+        }
+    }
+    v
+}
+
+fn npm_global_prefixes_from_user_npmrc() -> Vec<String> {
+    let mut v = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        let np = home.join(".npmrc");
+        if let Ok(content) = std::fs::read_to_string(&np) {
+            v.extend(parse_npmrc_prefix_lines(&content));
+        }
+    }
+    v
+}
+
+#[cfg(windows)]
+fn windows_npm_global_prefix_dirs() -> Vec<String> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::<String>::new();
+    let mut out = Vec::new();
+    let mut push = |s: String| {
+        let s = normalize_cmd_path(s.trim());
+        if s.is_empty() {
+            return;
+        }
+        if seen.insert(s.clone()) {
+            out.push(s);
+        }
+    };
+    if let Ok(p) = std::env::var("npm_config_prefix") {
+        push(p);
+    }
+    for p in npm_global_prefixes_from_user_npmrc() {
+        push(p);
+    }
+    out
+}
+
 /// 获取扩展的 PATH 环境变量
 /// GUI 应用启动时可能没有继承用户 shell 的 PATH，需要手动添加常见路径
 pub fn get_extended_path() -> String {
@@ -61,13 +126,10 @@ pub fn get_extended_path() -> String {
         if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
             paths.push(format!("{}\\nodejs", pf86));
         }
-        // 用户自定义 npm 全局前缀（例如 prefix=D:\Dev-code\nodejs\node_global）
-        if let Ok(prefix) = std::env::var("npm_config_prefix") {
-            let prefix = prefix.trim();
-            if !prefix.is_empty() {
-                paths.push(prefix.to_string());
-                paths.push(format!("{}\\bin", prefix));
-            }
+        // 自定义 npm 全局目录：环境变量 + 用户 ~/.npmrc 中的 prefix=
+        for pref in windows_npm_global_prefix_dirs() {
+            paths.push(pref.clone());
+            paths.push(format!("{}\\bin", pref));
         }
         if let Ok(nvm_symlink) = std::env::var("NVM_SYMLINK") {
             paths.push(nvm_symlink);
@@ -103,6 +165,15 @@ pub fn get_extended_path() -> String {
 
     #[cfg(not(windows))]
     {
+        // 用户 ~/.npmrc 中的 prefix=（先于系统路径尝试）
+        for pref in npm_global_prefixes_from_user_npmrc().into_iter().rev() {
+            let pref = pref.trim();
+            if pref.is_empty() {
+                continue;
+            }
+            paths.insert(0, format!("{}/bin", pref));
+            paths.insert(0, pref.to_string());
+        }
         paths.push("/opt/homebrew/bin".to_string()); // Homebrew on Apple Silicon
         paths.push("/usr/local/bin".to_string());
         paths.push("/usr/bin".to_string());
@@ -161,17 +232,9 @@ pub fn get_extended_path() -> String {
 pub fn run_command(cmd: &str, args: &[&str]) -> io::Result<Output> {
     let mut command = Command::new(cmd);
     command.args(args);
-    
-    // 在非 Windows 系统上使用扩展的 PATH
-    #[cfg(not(windows))]
-    {
-        let extended_path = get_extended_path();
-        command.env("PATH", extended_path);
-    }
-    
+    command.env("PATH", get_extended_path());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    
     command.output()
 }
 
@@ -230,10 +293,11 @@ pub fn run_bash_output(script: &str) -> Result<String, String> {
 pub fn run_cmd(script: &str) -> io::Result<Output> {
     let mut cmd = Command::new("cmd");
     cmd.args(["/c", script]);
-    
     #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    
+    {
+        cmd.env("PATH", get_extended_path());
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     cmd.output()
 }
 
@@ -267,10 +331,11 @@ pub fn run_powershell(script: &str) -> io::Result<Output> {
     let mut cmd = Command::new("powershell");
     // 使用 -ExecutionPolicy Bypass 绕过执行策略限制
     cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]);
-    
     #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    
+    {
+        cmd.env("PATH", get_extended_path());
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     cmd.output()
 }
 
@@ -366,6 +431,44 @@ fn resolve_openclaw_via_where() -> Option<String> {
 /// 规范化 CLI 路径（去除外层引号与空白，避免拼进 cmd 后变成非法「命令名」）
 pub fn normalize_cmd_path(p: &str) -> String {
     p.trim_matches(|c| c == '"' || c == ' ' || c == '\t').to_string()
+}
+
+/// Windows：npm 全局 `openclaw.cmd` 与 `node_modules/openclaw` 同在前缀目录下。
+/// 优先用 `node <package.bin>` 启动，避免 `.cmd` shim / `cmd` 引号解析导致无法执行。
+#[cfg(windows)]
+fn resolve_openclaw_entry_js_from_npm_global_cmd(cmd_path: &str) -> Option<std::path::PathBuf> {
+    let cmd_path = normalize_cmd_path(cmd_path);
+    let path = std::path::Path::new(&cmd_path);
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "cmd" && ext != "bat" {
+        return None;
+    }
+    let parent = path.parent()?;
+    let pkg_root = parent.join("node_modules").join("openclaw");
+    let pj_path = pkg_root.join("package.json");
+    let pj_text = std::fs::read_to_string(&pj_path).ok()?;
+    let v: JsonValue = serde_json::from_str(&pj_text).ok()?;
+    let bin = v.get("bin")?;
+    let rel = match bin {
+        JsonValue::String(s) => s.clone(),
+        JsonValue::Object(o) => o
+            .get("openclaw")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| o.values().find_map(|x| x.as_str().map(|s| s.to_string())))?,
+        _ => return None,
+    };
+    let rel = rel.trim_start_matches("./");
+    let script = pkg_root.join(rel);
+    if script.is_file() {
+        Some(script)
+    } else {
+        None
+    }
 }
 
 /// Windows：构造 `cmd /d /c` 后面的命令行。
@@ -535,6 +638,10 @@ fn get_windows_openclaw_paths() -> Vec<String> {
         paths.push(format!("{}\\AppData\\Local\\npm\\openclaw.cmd", h));
     }
     
+    for pref in windows_npm_global_prefix_dirs() {
+        paths.push(format!("{}\\openclaw.cmd", pref));
+    }
+
     // 3. Program Files 下的 nodejs
     paths.push("C:\\Program Files\\nodejs\\openclaw.cmd".to_string());
     paths.push("C:\\Program Files (x86)\\nodejs\\openclaw.cmd".to_string());
@@ -617,6 +724,73 @@ fn normalize_version_token(s: &str) -> Option<String> {
     })
 }
 
+/// 根据 CLI 路径推断全局安装的 `node_modules/openclaw` 目录（Windows 与常见 npm Unix 布局）。
+fn openclaw_npm_package_roots(cli_path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    let Some(parent) = cli_path.parent() else {
+        return roots;
+    };
+    roots.push(parent.join("node_modules").join("openclaw"));
+    if parent.file_name().and_then(|n| n.to_str()) == Some("bin") {
+        if let Some(prefix) = parent.parent() {
+            roots.push(
+                prefix
+                    .join("lib")
+                    .join("node_modules")
+                    .join("openclaw"),
+            );
+        }
+    }
+    roots
+}
+
+/// 当 `openclaw --version` 无法执行时，从已安装包内的 package.json 读取版本（供界面展示）。
+pub fn read_installed_openclaw_version_from_package_json() -> Option<String> {
+    let raw = get_openclaw_path()?;
+    let path_norm = normalize_cmd_path(&raw);
+    let p = std::path::Path::new(&path_norm);
+    for root in openclaw_npm_package_roots(p) {
+        let pj = root.join("package.json");
+        let Ok(txt) = std::fs::read_to_string(&pj) else {
+            continue;
+        };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) else {
+            continue;
+        };
+        let Some(s) = val.get("version").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let s = s.trim();
+        if s.is_empty() {
+            continue;
+        }
+        return Some(if s.starts_with('v') {
+            s.to_string()
+        } else {
+            format!("v{}", s)
+        });
+    }
+    None
+}
+
+/// 优先执行 CLI 取版本；失败则读 `node_modules/openclaw/package.json`。
+pub fn get_openclaw_version_for_display() -> Option<String> {
+    if get_openclaw_path().is_none() {
+        return None;
+    }
+    match run_openclaw(&["--version"]) {
+        Ok(v) => {
+            let t = v.trim();
+            if !t.is_empty() {
+                Some(t.to_string())
+            } else {
+                read_installed_openclaw_version_from_package_json()
+            }
+        }
+        Err(_) => read_installed_openclaw_version_from_package_json(),
+    }
+}
+
 /// 执行 openclaw 命令并获取输出
 pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
     debug!("[Shell] 执行 openclaw 命令: {:?}", args);
@@ -638,14 +812,28 @@ pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
     let output = {
         #[cfg(windows)]
         {
-            let script = windows_openclaw_cmd_script(&openclaw_path, args);
-            debug!("[Shell] Windows cmd /c: {}", script);
-            let mut cmd = Command::new("cmd");
-            cmd.args(["/d", "/c", &script])
-                .env("OPENCLAW_GATEWAY_TOKEN", DEFAULT_GATEWAY_TOKEN)
-                .env("PATH", &extended_path);
-            cmd.creation_flags(CREATE_NO_WINDOW);
-            cmd.output()
+            if let Some(script) = resolve_openclaw_entry_js_from_npm_global_cmd(&openclaw_path) {
+                debug!(
+                    "[Shell] Windows 使用 node 直连: {}",
+                    script.display()
+                );
+                let mut cmd = Command::new("node");
+                cmd.arg(&script)
+                    .args(args)
+                    .env("OPENCLAW_GATEWAY_TOKEN", DEFAULT_GATEWAY_TOKEN)
+                    .env("PATH", &extended_path);
+                cmd.creation_flags(CREATE_NO_WINDOW);
+                cmd.output()
+            } else {
+                let script = windows_openclaw_cmd_script(&openclaw_path, args);
+                debug!("[Shell] Windows cmd /c: {}", script);
+                let mut cmd = Command::new("cmd");
+                cmd.args(["/d", "/c", &script])
+                    .env("OPENCLAW_GATEWAY_TOKEN", DEFAULT_GATEWAY_TOKEN)
+                    .env("PATH", &extended_path);
+                cmd.creation_flags(CREATE_NO_WINDOW);
+                cmd.output()
+            }
         }
         #[cfg(not(windows))]
         {
@@ -699,9 +887,6 @@ fn ends_with_ignore_case(s: &str, suffix: &str) -> bool {
 fn ends_with_ignore_case(s: &str, suffix: &str) -> bool {
     s.ends_with(suffix)
 }
-
-/// 默认的 Gateway Token
-pub const DEFAULT_GATEWAY_TOKEN: &str = "openclaw-manager-local-token";
 
 /// 从 ~/.openclaw/env 文件读取所有环境变量
 /// 与 shell 脚本 `source ~/.openclaw/env` 行为一致
@@ -764,11 +949,22 @@ pub fn spawn_openclaw_gateway() -> io::Result<()> {
     
     #[cfg(windows)]
     let mut cmd = {
-        let script = windows_openclaw_cmd_script(&openclaw_path, &["gateway", "--port", "18789"]);
-        info!("[Shell] Windows 启动: {}", script);
-        let mut c = Command::new("cmd");
-        c.args(["/d", "/c", &script]);
-        c
+        if let Some(script) = resolve_openclaw_entry_js_from_npm_global_cmd(&openclaw_path) {
+            info!(
+                "[Shell] Windows 启动 gateway (node): {}",
+                script.display()
+            );
+            let mut c = Command::new("node");
+            c.arg(&script).args(["gateway", "--port", "18789"]);
+            c
+        } else {
+            let script =
+                windows_openclaw_cmd_script(&openclaw_path, &["gateway", "--port", "18789"]);
+            info!("[Shell] Windows 启动 (cmd): {}", script);
+            let mut c = Command::new("cmd");
+            c.args(["/d", "/c", &script]);
+            c
+        }
     };
     #[cfg(not(windows))]
     let mut cmd = {

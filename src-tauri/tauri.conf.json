@@ -34,6 +34,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "resources/32x32.png": "32x32.png",
+      "resources/window_icon.png": "window_icon.png"
+    },
     "icon": [
       "resources/32x32.png",
       "resources/128x128.png",
