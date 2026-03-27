@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react';
-import brandSvgUrl from '@/assets/brand-icon.svg?url';
+
+/** 打包后由 Vite 解析为实际 URL，避免 `*.svg?url` 在仅跑 tsc 时路径别名不匹配 */
+const brandSvgFallbackUrl = new URL('../assets/brand-icon.svg', import.meta.url).href;
 
 interface BrandMarkProps {
   className?: string;
@@ -18,7 +20,7 @@ export function BrandMark({ className, width = 32, height = 32 }: BrandMarkProps
   const onError = useCallback(() => {
     if (stage === 'png') {
       setStage('svg');
-      setSrc(brandSvgUrl);
+      setSrc(brandSvgFallbackUrl);
     }
   }, [stage]);
 
