@@ -903,8 +903,7 @@ export function Channels() {
                           <div className="flex-1">
                             <p className="text-amber-400 font-medium">需要安装 QQ Bot 插件</p>
                             <p className="text-xs text-content-secondary mt-1">
-                              QQ 渠道需先安装腾讯官方插件 {QQBOT_OFFICIAL_PLUGIN.replace('@latest', '')}
-                              （与 q.qq.com 机器人管理页「原生接入 OpenClaw」一致）。
+                              可一键安装；若已在终端装好，点「刷新状态」即可。
                             </p>
                             <div className="mt-3 flex flex-wrap gap-2">
                               <button
@@ -926,29 +925,6 @@ export function Channels() {
                               >
                                 刷新状态
                               </button>
-                            </div>
-                            <div className="text-xs text-content-tertiary mt-2 space-y-1.5">
-                              <p>
-                                ① 安装插件：{' '}
-                                <code className="px-1.5 py-0.5 bg-surface-elevated rounded text-content-secondary break-all">
-                                  openclaw plugins install {QQBOT_OFFICIAL_PLUGIN}
-                                </code>
-                              </p>
-                              <p>
-                                ② 绑定机器人（AppID:AppSecret）：{' '}
-                                <code className="px-1.5 py-0.5 bg-surface-elevated rounded text-content-secondary break-all">
-                                  openclaw channels add --channel qqbot --token &quot;AppID:AppSecret&quot;
-                                </code>
-                              </p>
-                              <p>
-                                ③ 重启 Gateway：{' '}
-                                <code className="px-1.5 py-0.5 bg-surface-elevated rounded text-content-secondary">
-                                  openclaw gateway restart
-                                </code>
-                              </p>
-                              <p className="text-content-secondary">
-                                本页保存配置后，也可由管理端写入环境；若你已用官方命令完成上述步骤，点击「刷新状态」即可。
-                              </p>
                             </div>
                           </div>
                         </div>

@@ -541,6 +541,22 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
     } else if platform::is_linux() {
         shell::run_bash_output("cat /etc/os-release | grep VERSION_ID | cut -d'=' -f2 | tr -d '\"'")
             .unwrap_or_else(|_| "unknown".to_string())
+    } else if platform::is_windows() {
+        // `ver` 默认把版本写在 stderr
+        shell::run_cmd("ver")
+            .ok()
+            .map(|out| {
+                let a = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                let b = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !a.is_empty() {
+                    a
+                } else if !b.is_empty() {
+                    b
+                } else {
+                    "unknown".to_string()
+                }
+            })
+            .unwrap_or_else(|| "unknown".to_string())
     } else {
         "unknown".to_string()
     };

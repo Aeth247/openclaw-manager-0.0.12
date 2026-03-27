@@ -1,8 +1,11 @@
 use crate::models::ServiceStatus;
 use crate::utils::shell;
+use crate::utils::platform;
 use tauri::command;
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::process::Command;
-use log::{info, debug};
+use log::{info, warn, debug};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -126,10 +129,11 @@ fn get_pids_on_port(port: u16) -> Vec<u32> {
         
         match output {
             Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout)
+                let set: BTreeSet<u32> = String::from_utf8_lossy(&out.stdout)
                     .lines()
                     .filter_map(|line| line.trim().parse::<u32>().ok())
-                    .collect()
+                    .collect();
+                set.into_iter().collect()
             }
             _ => vec![],
         }
@@ -144,11 +148,13 @@ fn get_pids_on_port(port: u16) -> Vec<u32> {
         match cmd.output() {
             Ok(out) if out.status.success() => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                stdout.lines()
+                let set: BTreeSet<u32> = stdout
+                    .lines()
                     .filter(|line| line.contains(&format!(":{}", port)) && line.contains("LISTENING"))
                     .filter_map(|line| line.split_whitespace().last())
                     .filter_map(|pid_str| pid_str.parse::<u32>().ok())
-                    .collect()
+                    .collect();
+                set.into_iter().collect()
             }
             _ => vec![],
         }
@@ -172,10 +178,11 @@ fn kill_process(pid: u32, force: bool) -> bool {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("taskkill");
+        // /T：结束进程树（避免子进程仍占用端口）；/F：强制结束
         if force {
-            cmd.args(["/F", "/PID", &pid.to_string()]);
+            cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
         } else {
-            cmd.args(["/PID", &pid.to_string()]);
+            cmd.args(["/T", "/PID", &pid.to_string()]);
         }
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.output()
@@ -230,64 +237,77 @@ pub async fn stop_service() -> Result<String, String> {
 #[command]
 pub async fn restart_service() -> Result<String, String> {
     info!("[服务] 重启服务...");
-    
-    // 先停止
-    let _ = stop_service().await;
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    
-    // 再启动
-    start_service().await
+
+    // 优先尝试 CLI 优雅停止（不阻塞结果）
+    let _ = shell::run_openclaw(&["gateway", "stop"]);
+
+    match stop_service().await {
+        Ok(msg) => info!("[服务] {}", msg),
+        Err(e) => warn!("[服务] stop_service: {}（将继续尝试启动）", e),
+    }
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    match start_service().await {
+        Ok(s) => Ok(s),
+        Err(e) if e.contains("已在运行") => {
+            warn!("[服务] 启动报「已在运行」，再次强制停止后重试");
+            let _ = shell::run_openclaw(&["gateway", "stop"]);
+            let _ = stop_service().await;
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            start_service().await
+        }
+        Err(e) => Err(e),
+    }
 }
 
-/// 获取日志（直接读取日志文件，比 RPC 更可靠）
+/// 读取文本文件末尾至多 max_lines 行非空行（Windows 无 tail 也可用）
+fn read_tail_lines(path: &std::path::Path, max_lines: u32) -> std::io::Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect();
+    let n = max_lines as usize;
+    if lines.len() > n {
+        let start = lines.len() - n;
+        lines = lines.split_off(start);
+    }
+    Ok(lines)
+}
+
+/// 获取日志（直接读取日志文件；Windows 不使用外部 tail）
 #[command]
 pub async fn get_logs(lines: Option<u32>) -> Result<Vec<String>, String> {
     let n = lines.unwrap_or(100);
-    
-    let config_dir = crate::utils::platform::get_config_dir();
-    
-    // 尝试多个已知的日志文件位置
+    let base = PathBuf::from(platform::get_config_dir());
+
     let log_files = vec![
-        format!("{}/logs/gateway.log", config_dir),
-        format!("{}/logs/gateway.err.log", config_dir),
-        format!("{}/stderr.log", config_dir),
-        format!("{}/stdout.log", config_dir),
+        base.join("logs").join("gateway.log"),
+        base.join("logs").join("gateway.err.log"),
+        base.join("stderr.log"),
+        base.join("stdout.log"),
     ];
-    
+
     let mut all_lines: Vec<String> = Vec::new();
-    
-    for log_file in &log_files {
-        if !std::path::Path::new(log_file).exists() {
+
+    for log_file in log_files {
+        if !log_file.exists() {
             continue;
         }
-        
-        // 使用 tail 高效读取最后 N 行
-        match Command::new("tail")
-            .args(["-n", &n.to_string(), log_file])
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                let content = String::from_utf8_lossy(&output.stdout);
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        all_lines.push(trimmed.to_string());
-                    }
-                }
-            }
-            _ => continue,
+        match read_tail_lines(&log_file, n) {
+            Ok(mut chunk) => all_lines.append(&mut chunk),
+            Err(e) => debug!("读取 {:?} 失败: {}", log_file, e),
         }
     }
-    
-    // 尝试按时间戳排序（日志格式通常以 ISO 时间戳开头）
+
     all_lines.sort();
-    
-    // 去重并保留最后 N 行
     all_lines.dedup();
     let total = all_lines.len();
     if total > n as usize {
         all_lines = all_lines.split_off(total - n as usize);
     }
-    
+
     Ok(all_lines)
 }

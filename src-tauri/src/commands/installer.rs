@@ -77,7 +77,8 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
     let config_dir_exists = std::path::Path::new(&config_dir).exists();
     info!("[环境检查] 配置目录: {}, exists={}", config_dir, config_dir_exists);
     
-    let ready = node_installed && node_version_ok && openclaw_version.is_some();
+    // 能定位到 CLI 即允许进入主流程；版本号用于展示与更新检查，解析失败不再卡死「环境未就绪」
+    let ready = node_installed && node_version_ok && openclaw_path_ok;
     info!("[环境检查] 环境就绪状态: ready={}", ready);
     
     Ok(EnvironmentStatus {
@@ -1016,16 +1017,30 @@ pub async fn check_openclaw_update() -> Result<UpdateInfo, String> {
     info!("[版本检查] 开始检查 OpenClaw 更新...");
     
     // 获取当前版本
+    let path_ok = shell::get_openclaw_path().is_some();
     let current_version = get_openclaw_version();
-    info!("[版本检查] 当前版本: {:?}", current_version);
+    info!("[版本检查] 当前版本: {:?}, path_ok: {}", current_version, path_ok);
     
-    if current_version.is_none() {
+    if !path_ok && current_version.is_none() {
         info!("[版本检查] OpenClaw 未安装");
         return Ok(UpdateInfo {
             update_available: false,
             current_version: None,
             latest_version: None,
             error: Some("OpenClaw 未安装".to_string()),
+        });
+    }
+
+    if path_ok && current_version.is_none() {
+        let latest_version = get_latest_openclaw_version();
+        return Ok(UpdateInfo {
+            update_available: false,
+            current_version: None,
+            latest_version,
+            error: Some(
+                "已检测到 OpenClaw CLI，但无法解析版本号。可重启管理端或在终端执行 openclaw --version 排查。"
+                    .to_string(),
+            ),
         });
     }
     

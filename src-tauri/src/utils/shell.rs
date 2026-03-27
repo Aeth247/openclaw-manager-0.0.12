@@ -287,6 +287,56 @@ pub fn spawn_background(script: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Windows：用与启动子进程相同的 PATH 解析 `where openclaw`，得到完整 .cmd 路径
+#[cfg(windows)]
+fn resolve_openclaw_via_where() -> Option<String> {
+    let extended = get_extended_path();
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/d", "/s", "/c", "where openclaw"]);
+    cmd.env("PATH", &extended);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let out = String::from_utf8_lossy(&output.stdout);
+    let mut candidates: Vec<&str> = out.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    candidates.sort_by_key(|p| {
+        let pl = p.to_lowercase();
+        if pl.ends_with(".cmd") {
+            0
+        } else if pl.ends_with(".ps1") {
+            2
+        } else {
+            1
+        }
+    });
+    for p in candidates {
+        if std::path::Path::new(p).exists() {
+            return Some(p.to_string());
+        }
+    }
+    None
+}
+
+/// Windows：`cmd /c` 一行调用（路径含空格时也能工作）
+#[cfg(windows)]
+fn windows_cmd_c_one_line(script: &str, args: &[&str]) -> String {
+    let esc = script.replace('"', r#"\""#);
+    let mut line = format!("\"{}\"", esc);
+    for a in args {
+        line.push(' ');
+        if a.contains(' ') {
+            line.push('"');
+            line.push_str(a);
+            line.push('"');
+        } else {
+            line.push_str(a);
+        }
+    }
+    line
+}
+
 /// 获取 openclaw 可执行文件路径
 /// 检测多个可能的安装路径，因为 GUI 应用不继承用户 shell 的 PATH
 pub fn get_openclaw_path() -> Option<String> {
@@ -310,8 +360,12 @@ pub fn get_openclaw_path() -> Option<String> {
         }
     }
     
-    // 回退：检查是否在 PATH 中
+    // 回退：PATH 中有 openclaw 时，在 Windows 下必须解析出真实路径（裸用 Command::new("openclaw") 常触发 program not found）
     if command_exists("openclaw") {
+        #[cfg(windows)]
+        if let Some(p) = resolve_openclaw_via_where() {
+            return Some(p);
+        }
         return Some("openclaw".to_string());
     }
     
@@ -324,7 +378,14 @@ pub fn get_openclaw_path() -> Option<String> {
             }
         }
     }
-    
+
+    // Windows：即使上面未命中，再用扩展 PATH + where（覆盖自定义 npm 前缀等）
+    #[cfg(windows)]
+    if let Some(p) = resolve_openclaw_via_where() {
+        info!("[Shell] 扩展 PATH + where 找到 openclaw: {}", p);
+        return Some(p);
+    }
+
     None
 }
 
@@ -409,8 +470,9 @@ fn get_windows_openclaw_paths() -> Vec<String> {
     
     // 2. 用户目录下的 npm 全局路径
     if let Some(home) = dirs::home_dir() {
-        let npm_path = format!("{}\\AppData\\Roaming\\npm\\openclaw.cmd", home.display());
-        paths.push(npm_path);
+        let h = home.display().to_string();
+        paths.push(format!("{}\\AppData\\Roaming\\npm\\openclaw.cmd", h));
+        paths.push(format!("{}\\AppData\\Local\\npm\\openclaw.cmd", h));
     }
     
     // 3. Program Files 下的 nodejs
@@ -442,6 +504,59 @@ fn get_windows_openclaw_paths() -> Vec<String> {
     paths
 }
 
+/// 从 openclaw --version 等输出的 stdout/stderr 中提取版本（不少 Node CLI 把版本打在 stderr）
+fn parse_openclaw_version_from_output(stdout: &str, stderr: &str) -> Option<String> {
+    for chunk in [stdout, stderr] {
+        for line in chunk.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let skip = line.contains("ExperimentalWarning")
+                || line.contains("DeprecationWarning")
+                || line.starts_with("(");
+            if skip {
+                continue;
+            }
+            // 整行即版本
+            if let Some(v) = normalize_version_token(&clean_token(line)) {
+                return Some(v);
+            }
+            // 行内最后一个类似 x.y.z 的 token
+            for tok in line.split_whitespace().rev() {
+                let t = clean_token(tok);
+                if let Some(v) = normalize_version_token(&t) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn clean_token(s: &str) -> String {
+    s.trim_matches(|c| c == '(' || c == ')' || c == ',' || c == '"' || c == '\'')
+        .trim()
+        .to_string()
+}
+
+/// 识别主版本号.次版本号 形式（含可选 v 前缀）
+fn normalize_version_token(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let body = t.strip_prefix('v').unwrap_or(t);
+    let mut parts = body.split('.');
+    let _major = parts.next()?.parse::<u32>().ok()?;
+    let _minor = parts.next()?.parse::<u32>().ok()?;
+    Some(if t.starts_with('v') {
+        t.to_string()
+    } else {
+        format!("v{}", body)
+    })
+}
+
 /// 执行 openclaw 命令并获取输出
 pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
     debug!("[Shell] 执行 openclaw 命令: {:?}", args);
@@ -456,30 +571,28 @@ pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
     // 获取扩展的 PATH，确保能找到 node
     let extended_path = get_extended_path();
     debug!("[Shell] 扩展 PATH: {}", extended_path);
-    
-    let output = if openclaw_path.ends_with(".cmd") {
-        // Windows: .cmd 文件需要通过 cmd /c 执行
-        let mut cmd_args = vec!["/c", &openclaw_path];
-        cmd_args.extend(args);
-        let mut cmd = Command::new("cmd");
-        cmd.args(&cmd_args)
-            .env("OPENCLAW_GATEWAY_TOKEN", DEFAULT_GATEWAY_TOKEN)
-            .env("PATH", &extended_path);
-        
+
+    let output = {
         #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        
-        cmd.output()
-    } else {
-        let mut cmd = Command::new(&openclaw_path);
-        cmd.args(args)
-            .env("OPENCLAW_GATEWAY_TOKEN", DEFAULT_GATEWAY_TOKEN)
-            .env("PATH", &extended_path);
-        
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        
-        cmd.output()
+        {
+            // 统一走 cmd /d /s /c：正确解析 .cmd、含空格路径，并应用 PATHEXT（避免 program not found）
+            let line = windows_cmd_c_one_line(&openclaw_path, args);
+            debug!("[Shell] Windows 执行行: {}", line);
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/d", "/s", "/c", &line])
+                .env("OPENCLAW_GATEWAY_TOKEN", DEFAULT_GATEWAY_TOKEN)
+                .env("PATH", &extended_path);
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            cmd.output()
+        }
+        #[cfg(not(windows))]
+        {
+            let mut cmd = Command::new(&openclaw_path);
+            cmd.args(args)
+                .env("OPENCLAW_GATEWAY_TOKEN", DEFAULT_GATEWAY_TOKEN)
+                .env("PATH", &extended_path);
+            cmd.output()
+        }
     };
     
     match output {
@@ -487,9 +600,24 @@ pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
             debug!("[Shell] 命令退出码: {:?}", out.status.code());
+
+            // --version：即使 exit code 非 0，只要解析出版本即视为成功（部分环境 stderr 混杂警告）
+            if args.first().copied() == Some("--version")
+                || args.first().copied() == Some("-V")
+            {
+                if let Some(v) = parse_openclaw_version_from_output(&stdout, &stderr) {
+                    return Ok(v);
+                }
+            }
+
             if out.status.success() {
-                debug!("[Shell] 命令执行成功, stdout 长度: {}", stdout.len());
-                Ok(stdout)
+                let text = if !stdout.trim().is_empty() {
+                    stdout.trim().to_string()
+                } else {
+                    stderr.trim().to_string()
+                };
+                debug!("[Shell] 命令执行成功, 输出长度: {}", text.len());
+                Ok(text)
             } else {
                 debug!("[Shell] 命令执行失败, stderr: {}", stderr);
                 Err(format!("{}\n{}", stdout, stderr).trim().to_string())
@@ -500,6 +628,18 @@ pub fn run_openclaw(args: &[&str]) -> Result<String, String> {
             Err(format!("执行 openclaw 失败: {}", e))
         }
     }
+}
+
+#[cfg(windows)]
+fn ends_with_ignore_case(s: &str, suffix: &str) -> bool {
+    s.len() >= suffix.len()
+        && s[s.len() - suffix.len()..]
+            .eq_ignore_ascii_case(suffix)
+}
+
+#[cfg(not(windows))]
+fn ends_with_ignore_case(s: &str, suffix: &str) -> bool {
+    s.ends_with(suffix)
 }
 
 /// 默认的 Gateway Token
@@ -561,14 +701,16 @@ pub fn spawn_openclaw_gateway() -> io::Result<()> {
     let extended_path = get_extended_path();
     info!("[Shell] 扩展 PATH: {}", extended_path);
     
-    // Windows 上 .cmd 文件需要通过 cmd /c 来执行
-    // 设置环境变量 OPENCLAW_GATEWAY_TOKEN，这样所有子命令都能自动使用
-    let mut cmd = if openclaw_path.ends_with(".cmd") {
-        info!("[Shell] Windows 模式: 使用 cmd /c 执行");
+    #[cfg(windows)]
+    let mut cmd = {
+        let line = windows_cmd_c_one_line(&openclaw_path, &["gateway", "--port", "18789"]);
+        info!("[Shell] Windows 启动: {}", line);
         let mut c = Command::new("cmd");
-        c.args(["/c", &openclaw_path, "gateway", "--port", "18789"]);
+        c.args(["/d", "/s", "/c", &line]);
         c
-    } else {
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
         info!("[Shell] Unix 模式: 直接执行");
         let mut c = Command::new(&openclaw_path);
         c.args(["gateway", "--port", "18789"]);
@@ -588,15 +730,18 @@ pub fn spawn_openclaw_gateway() -> io::Result<()> {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     
-    // 将 stdout/stderr 重定向到日志文件，以便 get_logs 可以读取
-    let logs_dir = format!("{}/logs", platform::get_config_dir());
+    let logs_dir = std::path::PathBuf::from(platform::get_config_dir()).join("logs");
     let _ = std::fs::create_dir_all(&logs_dir);
+
+    let stdout_log_path = logs_dir.join("gateway.log");
+    let stderr_log_path = logs_dir.join("gateway.err.log");
     
-    let stdout_log_path = format!("{}/gateway.log", logs_dir);
-    let stderr_log_path = format!("{}/gateway.err.log", logs_dir);
-    
-    info!("[Shell] 日志输出到: {} / {}", stdout_log_path, stderr_log_path);
-    
+    info!(
+        "[Shell] 日志输出到: {} / {}",
+        stdout_log_path.display(),
+        stderr_log_path.display()
+    );
+
     if let Ok(stdout_file) = std::fs::OpenOptions::new()
         .create(true).append(true).open(&stdout_log_path)
     {
@@ -629,14 +774,14 @@ pub fn spawn_openclaw_gateway() -> io::Result<()> {
 /// 检查命令是否存在
 pub fn command_exists(cmd: &str) -> bool {
     if platform::is_windows() {
-        // Windows: 使用 where 命令
-        let mut command = Command::new("where");
-        command.arg(cmd);
-        
-        #[cfg(windows)]
+        // Windows：where 必须带上与执行 openclaw 相同的 PATH，否则 GUI 进程常误判为不存在
+        let mut command = Command::new("cmd");
+        command
+            .args(["/d", "/s", "/c", &format!("where {}", cmd)])
+            .env("PATH", get_extended_path());
         command.creation_flags(CREATE_NO_WINDOW);
-        
-        command.output()
+        command
+            .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
     } else {

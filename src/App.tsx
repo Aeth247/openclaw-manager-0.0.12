@@ -206,8 +206,8 @@ function App() {
         <div className="flex h-screen items-center justify-center" style={{ backgroundColor: 'var(--bg-app)' }}>
           <div className="fixed inset-0 bg-gradient-radial pointer-events-none" />
           <div className="relative z-10 text-center">
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-xl bg-gradient-to-br from-claw-500 to-claw-700 mb-4 animate-pulse">
-              <span className="text-3xl">🦞</span>
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-xl bg-gradient-to-br from-claw-500 to-claw-700 mb-4 animate-pulse overflow-hidden">
+              <img src="/claw.svg" alt="" className="w-10 h-10" width={40} height={40} />
             </div>
             <p style={{ color: 'var(--text-tertiary)' }}>正在启动...</p>
           </div>

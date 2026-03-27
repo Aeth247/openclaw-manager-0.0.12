@@ -51,8 +51,8 @@ export function Sidebar({ currentPage, onNavigate, serviceStatus }: SidebarProps
         style={{ borderBottom: '1px solid var(--border-primary)' }}
       >
         <div className="flex items-center gap-3 titlebar-no-drag">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-claw-400 to-claw-600 flex items-center justify-center">
-            <span className="text-lg">🦞</span>
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-claw-400 to-claw-600 flex items-center justify-center overflow-hidden shrink-0">
+            <img src="/claw.svg" alt="" className="w-6 h-6" width={24} height={24} />
           </div>
           <div>
             <h1 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>虾池子</h1>
