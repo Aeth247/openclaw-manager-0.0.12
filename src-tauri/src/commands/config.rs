@@ -1,7 +1,6 @@
 use crate::models::{
     AIConfigOverview, ChannelConfig, ConfiguredModel, ConfiguredProvider,
-    ModelConfig, ModelCostConfig, OfficialProvider, OpenClawConfig,
-    ProviderConfig, SuggestedModel,
+    ModelConfig, OfficialProvider, SuggestedModel,
 };
 use crate::utils::{file, platform, shell};
 use log::{debug, error, info, warn};
@@ -1500,7 +1499,7 @@ pub async fn install_qqbot_plugin() -> Result<String, String> {
 
 // ============ 技能库管理 ============
 
-use crate::models::{SkillDefinition, SkillConfigField, SkillSelectOption};
+use crate::models::{SkillDefinition, SkillConfigField};
 
 /// 获取内置技能预设清单
 fn get_preset_skills() -> Vec<SkillDefinition> {

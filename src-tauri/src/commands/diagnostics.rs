@@ -1025,7 +1025,10 @@ pub async fn fix_security_issues(issue_ids: Vec<String>) -> Result<SecurityFixRe
     info!("[安全修复] 开始修复 {} 个问题...", issue_ids.len());
     let mut fixed_ids: Vec<String> = Vec::new();
     let mut failed_ids: Vec<String> = Vec::new();
+    #[cfg(target_os = "windows")]
     let mut manual_parts: Vec<String> = Vec::new();
+    #[cfg(not(target_os = "windows"))]
+    let manual_parts: Vec<String> = Vec::new();
 
     for id in &issue_ids {
         match id.as_str() {

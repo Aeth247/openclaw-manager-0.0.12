@@ -32,12 +32,16 @@ fn parse_ps_etime_seconds(line: &str) -> Option<u64> {
     let parts: Vec<&str> = clock.split(':').collect();
     let (h, m, sec) = match parts.len() {
         3 => (
-            parts[0].parse().ok()?,
-            parts[1].parse().ok()?,
-            parts[2].parse().ok()?,
+            parts[0].parse::<u64>().ok()?,
+            parts[1].parse::<u64>().ok()?,
+            parts[2].parse::<u64>().ok()?,
         ),
-        2 => (0u64, parts[0].parse().ok()?, parts[1].parse().ok()?),
-        1 => (0u64, 0u64, parts[0].parse().ok()?),
+        2 => (
+            0u64,
+            parts[0].parse::<u64>().ok()?,
+            parts[1].parse::<u64>().ok()?,
+        ),
+        1 => (0u64, 0u64, parts[0].parse::<u64>().ok()?),
         _ => return None,
     };
     Some(days * 86_400 + h * 3_600 + m * 60 + sec)
@@ -322,20 +326,29 @@ pub async fn stop_service() -> Result<String, String> {
     }
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    let mut still_running = get_pids_on_port(SERVICE_PORT);
-    #[cfg(windows)]
-    if !still_running.is_empty() {
-        // taskkill 偶发未清干净（权限/进程树），再试 PowerShell Stop-Process
-        for &pid in &still_running {
-            let script = format!(
-                "Stop-Process -Id {} -Force -ErrorAction SilentlyContinue",
-                pid
-            );
-            let _ = shell::run_powershell_output(&script);
+    let still_running = {
+        #[cfg(windows)]
+        {
+            let mut pids = get_pids_on_port(SERVICE_PORT);
+            if !pids.is_empty() {
+                // taskkill 偶发未清干净（权限/进程树），再试 PowerShell Stop-Process
+                for &pid in &pids {
+                    let script = format!(
+                        "Stop-Process -Id {} -Force -ErrorAction SilentlyContinue",
+                        pid
+                    );
+                    let _ = shell::run_powershell_output(&script);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                pids = get_pids_on_port(SERVICE_PORT);
+            }
+            pids
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        still_running = get_pids_on_port(SERVICE_PORT);
-    }
+        #[cfg(not(windows))]
+        {
+            get_pids_on_port(SERVICE_PORT)
+        }
+    };
 
     if still_running.is_empty() {
         info!("[服务] ✓ 已强制停止");
